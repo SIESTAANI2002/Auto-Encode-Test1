@@ -6,7 +6,7 @@ from pyrogram.errors import FloodWait, MessageNotModified
 from bot import bot, bot_loop, Var, ani_cache
 from bot.core.database import db
 from bot.core.func_utils import decode, is_fsubbed, get_fsubs, editMessage, sendMessage, new_task, convertTime, getfeed
-from bot.core.auto_animes import get_animes
+from bot.core.auto_animes import fetch_animes
 from bot.core.reporter import rep
 
 @bot.on_message(command('start') & private)
