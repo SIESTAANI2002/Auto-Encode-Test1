@@ -1,11 +1,8 @@
 from asyncio import gather, create_task, sleep as asleep, Event
 from asyncio.subprocess import PIPE
-from os import path as ospath, system
-from aiofiles import open as aiopen
+from os import path as ospath
 from aiofiles.os import remove as aioremove
 from traceback import format_exc
-from base64 import urlsafe_b64encode
-from time import time
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from bot import bot, bot_loop, Var, ani_cache, ffQueue, ffLock, ff_queued
@@ -18,7 +15,8 @@ from .tguploader import TgUploader
 from .reporter import rep
 
 btn_formatter = {
-    '720':'𝟳𝟮𝟬𝗽'
+    '720':'𝟳𝟮𝟬𝗽',
+    '1080':'𝟣𝟢𝟪𝟢𝗽'
 }
 
 async def fetch_animes():
@@ -26,11 +24,13 @@ async def fetch_animes():
     while True:
         await asleep(60)
         if ani_cache['fetch_animes']:
-            for link in Var.RSS_ITEMS:
+            # Support multiple RSS feeds
+            for link in Var.RSS_ITEMS.split():
+                qual = "720" if "r=720" in link else "1080"
                 if (info := await getfeed(link, 0)):
-                    bot_loop.create_task(get_animes(info.title, info.link))
+                    bot_loop.create_task(get_animes(info.title, info.link, qual))
 
-async def get_animes(name, torrent, force=False):
+async def get_animes(name, torrent, qual="720", force=False):
     try:
         aniInfo = TextEditor(name)
         await aniInfo.load_anilist()
@@ -43,7 +43,7 @@ async def get_animes(name, torrent, force=False):
             return
         if force or (not (ani_data := await db.getAnime(ani_id)) \
             or (ani_data and not (qual_data := ani_data.get(ep_no))) \
-            or (ani_data and qual_data and not all(qual for qual in qual_data.values()))):
+            or (ani_data and qual_data and not qual_data.get(qual))):
             
             if "[Batch]" in name:
                 await rep.report(f"Torrent Skipped!\n\n{name}", "warning")
@@ -55,7 +55,6 @@ async def get_animes(name, torrent, force=False):
                 photo=await aniInfo.get_poster(),
                 caption=await aniInfo.get_caption()
             )
-            #post_msg = await sendMessage(Var.MAIN_CHANNEL, (await aniInfo.get_caption()).format(await aniInfo.get_poster()), invert_media=True)
             
             await asleep(1.5)
             stat_msg = await sendMessage(Var.MAIN_CHANNEL, f"‣ <b>Anime Name :</b> <b><i>{name}</i></b>\n\n<i>Downloading...</i>")
@@ -76,7 +75,7 @@ async def get_animes(name, torrent, force=False):
             
             await ffLock.acquire()
             btns = []
-            for qual in Var.QUALS:
+            if qual in Var.QUALS:
                 filename = await aniInfo.get_upname(qual)
                 await editMessage(stat_msg, f"‣ <b>Anime Name :</b> <b><i>{name}</i></b>\n\n<i>Ready to Encode...</i>")
                 
@@ -129,4 +128,4 @@ async def extra_utils(msg_id, out_path):
         for chat_id in Var.BACKUP_CHANNEL.split():
             await msg.copy(int(chat_id))
             
-    # MediaInfo, ScreenShots, Sample Video ( Add-ons Features )
+    # Additional Add-ons: MediaInfo, Screenshots, Sample Video
