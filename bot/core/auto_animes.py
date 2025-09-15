@@ -1,132 +1,86 @@
-# auto_animes.py
-import os
 import asyncio
-from datetime import datetime
-from pyrogram import Client
+from os import path as ospath
+from aiofiles.os import makedirs
+from bot import Var, LOGS
 from bot.core.ffencoder import FFEncoder
-from bot.core.tordownload_helper import download_torrent
-from bot.config import Var  # Your config file with RSS_ITEMS, QUALS, etc.
+from bot.core.tordownload import TorDownloader
+from bot.core.text_utils import TextEditor
+from bot.core.tguploader import post_file, edit_post_buttons
+from bot.core.database import get_episode, add_episode, update_episode_quality
 
-# Downloads directory
-DOWNLOAD_DIR = "./downloads"
-if not os.path.exists(DOWNLOAD_DIR):
-    os.makedirs(DOWNLOAD_DIR)
+# Queue for handling tasks sequentially
+download_queue = asyncio.Queue()
+tor = TorDownloader()
 
-# Queue to store anime tasks
-anime_queue = asyncio.Queue()
-
-
-async def fetch_animes():
+async def process_feed_item(item, quality: str):
     """
-    Fetch RSS feeds from multiple sources and enqueue new episodes
+    item: dict with keys: url, title, episode_number, season, year, etc.
+    quality: "720" or "1080"
     """
-    feeds = Var.RSS_ITEMS if isinstance(Var.RSS_ITEMS, list) else Var.RSS_ITEMS.split()
-    print(f"[INFO] Loaded RSS feeds: {feeds}")
+    ep_id = f"{item['title']}_S{item.get('season', '01')}_E{item.get('episode_number', '01')}"
+    existing_ep = await get_episode(ep_id)
 
-    for feed_url in feeds:
-        # Use your existing logic to fetch items from RSS
-        # Example: fetched_items = parse_rss(feed_url)
-        # Here, we just simulate:
-        fetched_items = await simulate_rss_fetch(feed_url)
-        for ep in fetched_items:
-            await anime_queue.put(ep)
-    print("[INFO] Anime queue populated.")
+    # Skip if this quality already done
+    if existing_ep and quality in existing_ep.get('qualities', []):
+        LOGS.info(f"{ep_id} already has {quality}p encoded. Skipping.")
+        return
 
-
-async def simulate_rss_fetch(feed_url):
-    """
-    Dummy function to simulate RSS fetch; replace with actual logic
-    """
-    await asyncio.sleep(1)
-    return [
-        {
-            "title": "Sample Anime Episode 1",
-            "url": feed_url,  # Can be magnet or torrent link
-            "quality": "720" if "720" in feed_url else "1080",
-            "filename": "Sample_Anime_Ep1",
-        }
-    ]
-
-
-async def process_anime():
-    """
-    Process anime from queue:
-    1. Download file
-    2. Encode with FFEncoder
-    3. Send post to Telegram with dual buttons
-    """
-    while True:
-        anime = await anime_queue.get()
-        if not anime:
-            continue
-
-        title = anime["title"]
-        dl_url = anime["url"]
-        qual = anime["quality"]
-        filename = anime["filename"]
-
-        print(f"[INFO] Processing {title} [{qual}p]...")
-
+    # Download
+    if item['url'].startswith("magnet:") or item['url'].endswith(".torrent"):
         try:
-            # Download
-            dl_path = await download_torrent(dl_url, filename)
-            print(f"[INFO] Downloaded to {dl_path}")
-
-            # Encode
-            stat_msg = None  # Replace with your telegram message if using progress
-            encoder = FFEncoder(stat_msg, dl_path, filename, qual)
-            out_path = await encoder.start_encode()
-            print(f"[INFO] Encoded file saved at {out_path}")
-
-            # Send Telegram message with buttons
-            await send_telegram_post(title, qual, out_path)
-
-            # Cleanup
-            if os.path.exists(dl_path):
-                os.remove(dl_path)
-
+            downloaded_file = await tor.download(item['url'], name=None)
         except Exception as e:
-            print(f"[ERROR] Failed to process {title}: {e}")
+            LOGS.error(f"Download failed for {ep_id}: {e}")
+            return
+    else:
+        LOGS.error(f"Unsupported URL type: {item['url']}")
+        return
 
-        anime_queue.task_done()
+    # Auto-rename
+    editor = TextEditor(downloaded_file)
+    await editor.load_anilist()
+    new_name = await editor.get_upname(qual=quality)
 
+    # Move file to proper name
+    dest_path = ospath.join("downloads", new_name)
+    await asyncio.to_thread(os.rename, downloaded_file, dest_path)
 
-async def send_telegram_post(title, qual, file_path):
+    # Encode
+    encoder = FFEncoder(None, dest_path, new_name, quality)
+    try:
+        encoded_path = await encoder.start_encode()
+    except Exception as e:
+        LOGS.error(f"Encoding failed for {ep_id} [{quality}p]: {e}")
+        return
+
+    # Post to Telegram
+    caption = await editor.get_caption()
+    if existing_ep:
+        # Update buttons for second quality
+        await edit_post_buttons(existing_ep['message_id'], quality, encoded_path)
+        await update_episode_quality(ep_id, quality)
+    else:
+        msg_id = await post_file(encoded_path, caption, quality)
+        await add_episode(ep_id, msg_id, [quality])
+
+async def worker():
+    while True:
+        item, qual = await download_queue.get()
+        try:
+            await process_feed_item(item, qual)
+        except Exception as e:
+            LOGS.error(f"Failed processing {item.get('title')} [{qual}p]: {e}")
+        finally:
+            download_queue.task_done()
+
+def enqueue_item(item, quality):
     """
-    Send post to main channel with dual buttons (720p + 1080p)
+    Add an RSS item to the processing queue.
     """
-    buttons = []
-    if qual == "720":
-        buttons.append(("720p", f"t.me/download/{file_path}"))
-    elif qual == "1080":
-        buttons.append(("1080p", f"t.me/download/{file_path}"))
+    download_queue.put_nowait((item, quality))
 
-    # If both 720 & 1080 exist, add both buttons
-    if qual == "720" and await check_1080_exists(title):
-        buttons.append(("1080p", f"t.me/download/{file_path.replace('720', '1080')}"))
-
-    # Example Pyrogram send_message
-    async with Client("bot", api_id=Var.API_ID, api_hash=Var.API_HASH, bot_token=Var.BOT_TOKEN) as app:
-        await app.send_message(
-            chat_id=Var.MAIN_CHANNEL,
-            text=f"<b>{title}</b>\n<i>Available in multiple qualities</i>",
-            reply_markup=buttons
-        )
-
-
-async def check_1080_exists(title):
-    """
-    Check if 1080p version exists in queue or storage
-    """
-    # Simplified: you can implement actual check based on your logic
-    return True
-
-
-async def main():
-    print("[INFO] Auto Anime Bot Started!")
-    await fetch_animes()
-    await process_anime()
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
+# Start worker tasks
+async def start_workers(count=2):
+    await makedirs("downloads", exist_ok=True)
+    for _ in range(count):
+        asyncio.create_task(worker())
