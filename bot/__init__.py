@@ -21,9 +21,9 @@ LOGS = getLogger(__name__)
 load_dotenv('config.env')
 
 ani_cache = {
-    'fetch_animes': True,
-    'ongoing': set(),
-    'completed': set()
+    "ongoing": set(),
+    "completed": {},  # ✅ dict instead of set
+    "fetch_animes": True
 }
 ffpids_cache = list()
 
