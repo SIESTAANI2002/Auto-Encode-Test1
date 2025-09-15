@@ -13,23 +13,54 @@ from .text_utils import TextEditor
 from .ffencoder import FFEncoder
 from .tguploader import TgUploader
 from .reporter import rep
+import asyncio
+import aiohttp
+import feedparser
 
 btn_formatter = {
     '720':'𝟳𝟮𝟬𝗽',
     '1080':'𝟣𝟢𝟪𝟢𝗽'
 }
 
-async def fetch_animes():
-    await rep.report("Fetch Animes Started !!", "info")
-    while True:
-        await asleep(60)
-        if ani_cache['fetch_animes']:
-            # Support multiple RSS feeds
-            for link in Var.RSS_ITEMS.split():
-                qual = "720" if "r=720" in link else "1080"
-                if (info := await getfeed(link, 0)):
-                    bot_loop.create_task(get_animes(info.title, info.link, qual))
+async def fetch_feed(session, url):
+    try:
+        async with session.get(url) as resp:
+            text = await resp.text()
+            return feedparser.parse(text)
+    except Exception as e:
+        LOGGER.error(f"[ERROR] Failed to fetch {url}: {e}")
+        return None
 
+
+async def fetch_animes():
+    feeds = Var.RSS_ITEMS
+    if isinstance(feeds, str):
+        feeds = feeds.split()
+
+    LOGGER.info(f"Loaded RSS feeds: {feeds}")  # Debug line
+
+    async with aiohttp.ClientSession() as session:
+        for link in feeds:
+            parsed = await fetch_feed(session, link)
+            if not parsed:
+                continue
+
+            for entry in parsed.entries:
+                title = entry.get("title")
+                magnet = entry.get("link")
+                if not (title and magnet):
+                    continue
+
+                # Determine quality by title
+                if "1080" in title:
+                    quality = "1080"
+                elif "720" in title:
+                    quality = "720"
+                else:
+                    continue
+
+                await add_to_queue(title, magnet, quality)
+                LOGGER.info(f"Added {title} ({quality}p) to queue")
 async def get_animes(name, torrent, qual="720", force=False):
     try:
         aniInfo = TextEditor(name)
