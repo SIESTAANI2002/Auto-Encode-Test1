@@ -1,86 +1,57 @@
-import asyncio
 from os import path as ospath
-from aiofiles.os import makedirs
-from bot import Var, LOGS
-from bot.core.ffencoder import FFEncoder
+from asyncio import create_task, gather
 from bot.core.tordownload import TorDownloader
-from bot.core.text_utils import TextEditor
+from bot.core.ffencoder import FFEncoder, ffargs
 from bot.core.tguploader import post_file, edit_post_buttons
-from bot.core.database import get_episode, add_episode, update_episode_quality
+from bot.core.text_utils import TextEditor
+from bot import Var, LOGS
 
-# Queue for handling tasks sequentially
-download_queue = asyncio.Queue()
-tor = TorDownloader()
+# Simple cache to track processed episodes
+EPISODE_CACHE = {}  # {episode_hash: {'msg_id': ..., 'qualities': [720, 1080]}}
 
-async def process_feed_item(item, quality: str):
+async def process_anime(torrent_link, quality, message=None):
     """
-    item: dict with keys: url, title, episode_number, season, year, etc.
-    quality: "720" or "1080"
+    Process a single anime episode:
+    - Download
+    - Encode corresponding quality
+    - Upload to Telegram
+    - Update buttons if needed
     """
-    ep_id = f"{item['title']}_S{item.get('season', '01')}_E{item.get('episode_number', '01')}"
-    existing_ep = await get_episode(ep_id)
-
-    # Skip if this quality already done
-    if existing_ep and quality in existing_ep.get('qualities', []):
-        LOGS.info(f"{ep_id} already has {quality}p encoded. Skipping.")
-        return
-
-    # Download
-    if item['url'].startswith("magnet:") or item['url'].endswith(".torrent"):
-        try:
-            downloaded_file = await tor.download(item['url'], name=None)
-        except Exception as e:
-            LOGS.error(f"Download failed for {ep_id}: {e}")
-            return
-    else:
-        LOGS.error(f"Unsupported URL type: {item['url']}")
-        return
-
-    # Auto-rename
-    editor = TextEditor(downloaded_file)
-    await editor.load_anilist()
-    new_name = await editor.get_upname(qual=quality)
-
-    # Move file to proper name
-    dest_path = ospath.join("downloads", new_name)
-    await asyncio.to_thread(os.rename, downloaded_file, dest_path)
-
-    # Encode
-    encoder = FFEncoder(None, dest_path, new_name, quality)
     try:
-        encoded_path = await encoder.start_encode()
+        # 1️⃣ Download
+        downloader = TorDownloader(path="downloads")
+        dl_file = await downloader.download(torrent_link)
+        if not dl_file or not ospath.exists(dl_file):
+            LOGS.error(f"Download failed for {torrent_link}")
+            return
+
+        # 2️⃣ Auto-Rename & Get Metadata
+        editor = TextEditor(dl_file)
+        await editor.load_anilist()
+        up_name = await editor.get_upname(qual=quality)
+        caption = await editor.get_caption()
+
+        # 3️⃣ Encode
+        encoder = FFEncoder(message, dl_file, up_name, quality)
+        encoded_file = await encoder.start_encode()
+        if not encoded_file:
+            LOGS.error(f"Encoding failed for {up_name}")
+            return
+
+        # 4️⃣ Telegram Upload & Button Management
+        episode_hash = f"{editor.pdata.get('anime_title')}-{editor.pdata.get('episode_number')}"
+        if episode_hash in EPISODE_CACHE:
+            # Episode exists, update buttons
+            sent_msg_id = EPISODE_CACHE[episode_hash]['msg_id']
+            EPISODE_CACHE[episode_hash]['qualities'].append(quality)
+            buttons = [[f"{q}p" for q in EPISODE_CACHE[episode_hash]['qualities']]]
+            await edit_post_buttons(sent_msg_id, buttons)
+        else:
+            # First quality, create new post
+            sent_msg = await post_file(encoded_file, quality, message=message)
+            EPISODE_CACHE[episode_hash] = {'msg_id': sent_msg, 'qualities': [quality]}
+
+        LOGS.info(f"Processed {up_name} [{quality}p] successfully!")
+
     except Exception as e:
-        LOGS.error(f"Encoding failed for {ep_id} [{quality}p]: {e}")
-        return
-
-    # Post to Telegram
-    caption = await editor.get_caption()
-    if existing_ep:
-        # Update buttons for second quality
-        await edit_post_buttons(existing_ep['message_id'], quality, encoded_path)
-        await update_episode_quality(ep_id, quality)
-    else:
-        msg_id = await post_file(encoded_path, caption, quality)
-        await add_episode(ep_id, msg_id, [quality])
-
-async def worker():
-    while True:
-        item, qual = await download_queue.get()
-        try:
-            await process_feed_item(item, qual)
-        except Exception as e:
-            LOGS.error(f"Failed processing {item.get('title')} [{qual}p]: {e}")
-        finally:
-            download_queue.task_done()
-
-def enqueue_item(item, quality):
-    """
-    Add an RSS item to the processing queue.
-    """
-    download_queue.put_nowait((item, quality))
-
-# Start worker tasks
-async def start_workers(count=2):
-    await makedirs("downloads", exist_ok=True)
-    for _ in range(count):
-        asyncio.create_task(worker())
+        LOGS.error(f"Error processing anime: {e}")
