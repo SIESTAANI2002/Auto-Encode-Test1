@@ -40,7 +40,7 @@ class Var:
         exit(1)
                 
     OWNER_ID = int(getenv("OWNER_ID", "123456789"))  # <-- Add your Telegram ID here
-    RSS_ITEMS = getenv("RSS_ITEMS", "https://subsplease.org/rss/?r=1080").split()
+    RSS_ITEMS = getenv("RSS_ITEMS", "https://nyaa.si/?page=rss https://nyaa.si/?page=rss&q=ASW+1080p&c=0_0&f=0").split()
     FSUB_CHATS = list(map(int, getenv('FSUB_CHATS').split()))
     BACKUP_CHANNEL = getenv("BACKUP_CHANNEL") or ""
     MAIN_CHANNEL = int(getenv("MAIN_CHANNEL"))
