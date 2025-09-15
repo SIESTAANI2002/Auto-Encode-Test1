@@ -1,57 +1,43 @@
-from os import path as ospath
 from asyncio import create_task, gather
+from bot.core.tguploader import TgUploader
+from bot.core.ffencoder import FFEncoder
 from bot.core.tordownload import TorDownloader
-from bot.core.ffencoder import FFEncoder, ffargs
-from bot.core.tguploader import post_file, edit_post_buttons
 from bot.core.text_utils import TextEditor
-from bot import Var, LOGS
+from bot import LOGS, Var
 
-# Simple cache to track processed episodes
-EPISODE_CACHE = {}  # {episode_hash: {'msg_id': ..., 'qualities': [720, 1080]}}
-
-async def process_anime(torrent_link, quality, message=None):
+async def fetch_animes(anime_url, quality="720"):
     """
-    Process a single anime episode:
-    - Download
-    - Encode corresponding quality
-    - Upload to Telegram
-    - Update buttons if needed
+    Main function to fetch anime, download, encode, and upload.
+    Works with 720p or 1080p based on feed.
     """
     try:
-        # 1️⃣ Download
-        downloader = TorDownloader(path="downloads")
-        dl_file = await downloader.download(torrent_link)
-        if not dl_file or not ospath.exists(dl_file):
-            LOGS.error(f"Download failed for {torrent_link}")
-            return
+        # 1. Initialize downloader
+        downloader = TorDownloader()
 
-        # 2️⃣ Auto-Rename & Get Metadata
-        editor = TextEditor(dl_file)
+        # 2. Download file
+        LOGS.info(f"Starting download for {anime_url}")
+        downloaded_file = await downloader.download(anime_url)
+
+        # 3. Auto-rename using TextEditor
+        editor = TextEditor(downloaded_file)
         await editor.load_anilist()
-        up_name = await editor.get_upname(qual=quality)
-        caption = await editor.get_caption()
+        new_name = await editor.get_upname(qual=quality)
 
-        # 3️⃣ Encode
-        encoder = FFEncoder(message, dl_file, up_name, quality)
-        encoded_file = await encoder.start_encode()
-        if not encoded_file:
-            LOGS.error(f"Encoding failed for {up_name}")
-            return
+        # Rename the downloaded file
+        import os
+        new_path = os.path.join("downloads", new_name)
+        os.rename(downloaded_file, new_path)
 
-        # 4️⃣ Telegram Upload & Button Management
-        episode_hash = f"{editor.pdata.get('anime_title')}-{editor.pdata.get('episode_number')}"
-        if episode_hash in EPISODE_CACHE:
-            # Episode exists, update buttons
-            sent_msg_id = EPISODE_CACHE[episode_hash]['msg_id']
-            EPISODE_CACHE[episode_hash]['qualities'].append(quality)
-            buttons = [[f"{q}p" for q in EPISODE_CACHE[episode_hash]['qualities']]]
-            await edit_post_buttons(sent_msg_id, buttons)
-        else:
-            # First quality, create new post
-            sent_msg = await post_file(encoded_file, quality, message=message)
-            EPISODE_CACHE[episode_hash] = {'msg_id': sent_msg, 'qualities': [quality]}
+        # 4. Encode file using FFEncoder
+        ffencoder = FFEncoder(message=None, path=new_path, name=new_name, qual=quality)
+        encoded_file = await ffencoder.start_encode()
 
-        LOGS.info(f"Processed {up_name} [{quality}p] successfully!")
+        # 5. Upload to Telegram
+        # Create TgUploader instance with optional progress message
+        uploader = TgUploader(message=None)
+        await uploader.upload(encoded_file, quality)
+
+        LOGS.info(f"Upload completed for {new_name}")
 
     except Exception as e:
-        LOGS.error(f"Error processing anime: {e}")
+        LOGS.error(f"Error in fetch_animes: {e}")
