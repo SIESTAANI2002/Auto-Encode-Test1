@@ -1,31 +1,42 @@
 import os
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
+import asyncio
+from pydrive2.auth import GoogleAuth
+from pydrive2.drive import GoogleDrive
+from bot import Var
+from .reporter import rep
 
-SCOPES = ['https://www.googleapis.com/auth/drive.file']
+# Authenticate with credentials.json
+def gdrive_auth():
+    gauth = GoogleAuth()
+    gauth.LoadCredentialsFile("token.json")
+    if gauth.credentials is None:
+        gauth.LoadClientConfigFile("credentials.json")
+        gauth.LocalWebserverAuth()  # First-time manual auth
+    elif gauth.access_token_expired:
+        gauth.Refresh()
+    else:
+        gauth.Authorize()
+    gauth.SaveCredentialsFile("token.json")
+    return GoogleDrive(gauth)
 
-def authenticate():
-    creds = None
-    if os.path.exists('token.json'):
-        creds = Credentials.from_authorized_user_file('token.json', SCOPES)
-    if not creds or not creds.valid:
-        flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
-        creds = flow.run_local_server(port=0)
-        with open('token.json', 'w') as token:
-            token.write(creds.to_json())
-    service = build('drive', 'v3', credentials=creds)
-    return service
+async def upload_to_drive(file_path: str, folder_id: str = None):
+    try:
+        drive = gdrive_auth()
+        folder_id = folder_id or Var.DRIVE_FOLDER_ID
 
-def upload_file(file_path, folder_id=None):
-    service = authenticate()
-    file_metadata = {'name': os.path.basename(file_path)}
-    if folder_id:
-        file_metadata['parents'] = [folder_id]
-    media = MediaFileUpload(file_path, resumable=True)
-    file = service.files().create(
-        body=file_metadata, media_body=media, fields='id'
-    ).execute()
-    print(f"[GDrive] Uploaded {file_path} → File ID: {file.get('id')}")
-    return file.get('id')
+        file_name = os.path.basename(file_path)
+        gfile = drive.CreateFile({"title": file_name, "parents": [{"id": folder_id}]})
+        gfile.SetContentFile(file_path)
+        gfile.Upload()
+
+        file_link = f"https://drive.google.com/file/d/{gfile['id']}/view"
+        await rep.report(f"[INFO] File Uploaded to Drive: {file_link}", "info")
+
+        # remove local file after upload
+        if os.path.exists(file_path):
+            os.remove(file_path)
+
+        return file_link
+    except Exception as e:
+        await rep.report(f"[ERROR] GDrive Upload Failed\n{str(e)}", "error")
+        raise
