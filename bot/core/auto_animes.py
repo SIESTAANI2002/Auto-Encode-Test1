@@ -28,10 +28,10 @@ async def fetch_animes():
             for link in rss_list:
                 info = await getfeed(link, 0)
                 if info:
-                    # Determine quality based on feed
-                    if "720" in link or "r=720" in link:
+                    # Detect quality from feed link or title
+                    if "720" in link or "r=720" in link or "720p" in info.title:
                         quality = '720'
-                    elif "1080" in link or "r=1080" in link:
+                    elif "1080" in link or "r=1080" in link or "1080p" in info.title:
                         quality = '1080'
                     else:
                         continue
@@ -44,12 +44,14 @@ async def process_anime(name, torrent, quality):
         ani_id = aniInfo.adata.get('id')
         ep_no = aniInfo.pdata.get("episode_number")
 
+        # Ensure ongoing cache exists
         if ani_id not in ani_cache['ongoing']:
-            ani_cache['ongoing'].add(ani_id)
-        else:
+            ani_cache['ongoing'][ani_id] = set()
+        if ep_no in ani_cache['ongoing'][ani_id]:
             return
+        ani_cache['ongoing'][ani_id].add(ep_no)
 
-        # Initialize completed dict
+        # Ensure completed cache is dict
         if ani_id not in ani_cache['completed']:
             ani_cache['completed'][ani_id] = {}
         if ep_no not in ani_cache['completed'][ani_id]:
@@ -57,20 +59,20 @@ async def process_anime(name, torrent, quality):
         if quality in ani_cache['completed'][ani_id][ep_no]:
             return
 
-        # Check DB for existing post
+        # Skip batch torrents
+        if "[Batch]" in name or "batch" in name.lower():
+            await rep.report(f"Torrent Skipped!\n{name}", "warning")
+            return
+
+        # Already in DB?
         ani_data = await db.getAnime(ani_id)
         post_id = None
         if ani_data and ep_no in ani_data:
             post_id = ani_data[ep_no].get('post_id')
 
-        # Skip batch torrents
-        if "[Batch]" in name:
-            await rep.report(f"Torrent Skipped!\n{name}", "warning")
-            return
-
         await rep.report(f"New Anime Found!\n{name}", "info")
 
-        # Send initial post if doesn't exist
+        # Create or fetch main channel post
         if not post_id:
             post_msg = await bot.send_photo(
                 Var.MAIN_CHANNEL,
@@ -81,15 +83,20 @@ async def process_anime(name, torrent, quality):
         else:
             post_msg = await bot.get_messages(Var.MAIN_CHANNEL, message_ids=post_id)
 
-        stat_msg = await sendMessage(Var.MAIN_CHANNEL, f"‣ <b>{name}</b>\n<i>Downloading...</i>")
+        # Status message
+        stat_msg = await sendMessage(
+            Var.MAIN_CHANNEL,
+            f"‣ <b>{name}</b>\n<i>Downloading...</i>"
+        )
 
-        # Download torrent or magnet
+        # Download torrent/magnet
         dl = await TorDownloader("./downloads").download(torrent, name)
         if not dl or not ospath.exists(dl):
             await rep.report(f"File Download Incomplete: {name}", "error")
             await stat_msg.delete()
             return
 
+        # Queue encoding
         ffEvent = Event()
         ff_queued[post_id] = ffEvent
         if ffLock.locked():
@@ -106,19 +113,30 @@ async def process_anime(name, torrent, quality):
             await editMessage(stat_msg, f"‣ <b>{filename}</b>\n<i>Uploading...</i>")
             msg = await TgUploader(stat_msg).upload(out_path, quality)
 
-            # Add / edit button on post
+            # Generate download button link
             link = f"https://telegram.me/{(await bot.get_me()).username}?start={await encode('get-'+str(msg.id * abs(Var.FILE_STORE)))}"
+
+            # Update post buttons
             if post_msg.reply_markup:
                 btns = post_msg.reply_markup.inline_keyboard
                 if len(btns) != 0 and len(btns[-1]) == 1:
-                    btns[-1].append(InlineKeyboardButton(f"{btn_formatter[quality]} - {msg.document.file_size}", url=link))
+                    btns[-1].append(
+                        InlineKeyboardButton(f"{btn_formatter[quality]} - {msg.document.file_size}", url=link)
+                    )
                 else:
-                    btns.append([InlineKeyboardButton(f"{btn_formatter[quality]} - {msg.document.file_size}", url=link)])
+                    btns.append(
+                        [InlineKeyboardButton(f"{btn_formatter[quality]} - {msg.document.file_size}", url=link)]
+                    )
             else:
                 btns = [[InlineKeyboardButton(f"{btn_formatter[quality]} - {msg.document.file_size}", url=link)]]
-            await editMessage(post_msg, post_msg.caption.html if post_msg.caption else "", InlineKeyboardMarkup(btns))
 
-            # Save DB info
+            await editMessage(
+                post_msg,
+                post_msg.caption.html if post_msg.caption else "",
+                InlineKeyboardMarkup(btns)
+            )
+
+            # Save DB + cache
             await db.saveAnime(ani_id, ep_no, quality, post_id)
             ani_cache['completed'][ani_id][ep_no].add(quality)
 
