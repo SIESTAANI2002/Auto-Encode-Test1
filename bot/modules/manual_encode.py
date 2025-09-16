@@ -2,6 +2,7 @@ from bot import bot, Var, LOGS
 from pyrogram import filters
 from asyncio import Queue, Lock, create_task, sleep
 from bot.core.ffencoder import FFEncoder
+from bot.core import gdrive_uploader  # <-- added
 from os import remove, path as ospath
 import os
 from re import findall
@@ -57,12 +58,19 @@ async def queue_runner(client):
 
             output_path = await encoder_task
 
-            # Upload
+            # Upload to Telegram
             await client.send_document(
                 chat_id=Var.MAIN_CHANNEL,
                 document=output_path,
                 caption=f"✅ Encoded 720p: {filename}"
             )
+
+            # Upload to Google Drive (manual encode also)
+            try:
+                await gdrive_uploader.upload_to_drive(output_path, Var.DRIVE_FOLDER_ID)
+            except Exception as e:
+                LOGS.error(f"GDrive upload failed for {filename}: {str(e)}")
+
             await msg.edit(f"✅ Encoding and upload finished: {filename}")
 
             # Auto-delete if enabled
