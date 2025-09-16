@@ -6,9 +6,9 @@ from aiofiles.os import remove as aioremove
 from pyrogram.errors import FloodWait
 
 from bot import bot, Var
-from .func_utils import editMessage, sendMessage, convertBytes, convertTime
+from .func_utils import editMessage, convertBytes, convertTime
 from .reporter import rep
-from bot.core.gdrive_uploader import upload_to_gdrive  # ✅ added
+from .gdrive_uploader import upload_to_drive  # ✅ Import Drive uploader
 
 
 class TgUploader:
@@ -37,22 +37,22 @@ class TgUploader:
             else:
                 msg = await self.__client.send_video(
                     chat_id=Var.FILE_STORE,
-                    video=path,  # ✅ fixed param (was `document`)
+                    video=path,
                     thumb="thumb.jpg" if ospath.exists("thumb.jpg") else None,
                     caption=f"<i>{self.__name}</i>",
                     progress=self.progress_status
                 )
 
-            # ✅ Upload to Google Drive after TG upload
-            if Var.DRIVE_FOLDER_ID:
-                try:
-                    gdrive_link = await upload_to_gdrive(path, Var.DRIVE_FOLDER_ID)
-                    await self.__client.send_message(
-                        Var.FILE_STORE,
-                        f"📂 Also uploaded to Google Drive:\n{gdrive_link}"
-                    )
-                except Exception as gd_err:
-                    await rep.report(f"GDrive Upload Failed: {gd_err}", "error")
+            await rep.report("[INFO] Succesfully Uploaded File into Tg...", "info")
+
+            # ✅ After Telegram upload → Upload to Drive
+            drive_link = await upload_to_drive(path)
+
+            if drive_link:
+                await self.__client.send_message(
+                    chat_id=Var.LOG_CHANNEL,
+                    text=f"✅ <b>{self.__name}</b> also uploaded to <b>Google Drive</b>\n\n🔗 {drive_link}"
+                )
 
             return msg
 
@@ -63,7 +63,6 @@ class TgUploader:
             await rep.report(format_exc(), "error")
             raise e
         finally:
-            # remove file only after both uploads
             if ospath.exists(path):
                 await aioremove(path)
 
@@ -89,5 +88,4 @@ class TgUploader:
     ‣ <b>Time Left :</b> {convertTime(eta)}
 
 ‣ <b>File(s) Encoded:</b> <code>{Var.QUALS.index(self.__qual)} / {len(Var.QUALS)}</code>"""
-
             await editMessage(self.message, progress_str)
