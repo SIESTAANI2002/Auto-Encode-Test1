@@ -1,12 +1,17 @@
 from json import loads as jloads
 from os import path as ospath, execl
 from sys import executable
-
 from aiohttp import ClientSession
 from bot import Var, bot, ffQueue
 from bot.core.text_utils import TextEditor
 from bot.core.reporter import rep
+from bot.core import tguploader, gdrive_uploader  # Added
 
+import os
+
+# ==============================
+# Existing functions
+# ==============================
 async def upcoming_animes():
     if Var.SEND_SCHEDULE:
         try:
@@ -34,3 +39,21 @@ async def update_shdr(name, link):
             if line.startswith(f"📌 {name}"):
                 TD_lines[i+2] = f"    • **Status :** ✅ __Uploaded__\n    • **Link :** {link}"
         await TD_SCHR.edit("\n".join(TD_lines))
+
+# ==============================
+# New function: Upload to Telegram + Google Drive
+# ==============================
+async def upload_post(file_path, tg_chat_id=None, drive_folder_id=None):
+    """
+    Uploads a file to Telegram and Google Drive.
+    Does not touch auto/manual encode scripts.
+    """
+    # 1️⃣ Upload to Telegram
+    if tg_chat_id:
+        await tguploader.upload_file(file_path, chat_id=tg_chat_id)
+        print(f"[Telegram] Uploaded: {os.path.basename(file_path)}")
+
+    # 2️⃣ Upload to Google Drive
+    if drive_folder_id:
+        drive_file_id = gdrive_uploader.upload_file(file_path, folder_id=drive_folder_id)
+        print(f"[GDrive] Uploaded: {os.path.basename(file_path)} (ID: {drive_file_id})")
