@@ -1,23 +1,22 @@
 import os
+import json
 from pydrive2.auth import GoogleAuth
 from pydrive2.drive import GoogleDrive
-from oauth2client.service_account import ServiceAccountCredentials
 from bot.core.reporter import rep
 from traceback import format_exc
+from io import BytesIO
 
 def gdrive_auth():
     try:
-        # Scopes for full Drive access
-        scopes = ['https://www.googleapis.com/auth/drive']
-
-        # Load service account JSON
-        json_path = os.path.join(os.getcwd(), "service_account.json")
-        if not os.path.exists(json_path):
-            raise Exception("❌ service_account.json not found in bot directory")
-
-        credentials = ServiceAccountCredentials.from_json_keyfile_name(json_path, scopes)
         gauth = GoogleAuth()
-        gauth.credentials = credentials
+
+        # Get JSON from Heroku config
+        sa_json = os.environ.get("SERVICE_ACCOUNT_JSON")
+        if not sa_json:
+            raise Exception("❌ SERVICE_ACCOUNT_JSON not set in Heroku Config Vars")
+
+        # Load credentials from JSON string
+        gauth.LoadServiceAccountCredentials(json.loads(sa_json))
         drive = GoogleDrive(gauth)
         return drive
 
@@ -25,18 +24,18 @@ def gdrive_auth():
         raise Exception(f"❌ GDrive Auth Failed: {str(e)}")
 
 
-async def upload_file(file_path, filename):
+async def upload_file(file_path, filename, folder_id=None):
     try:
         drive = gdrive_auth()
-        # Use environment variable first, fallback to Var
-        folder_id = os.environ.get("DRIVE_FOLDER_ID") or getattr(__import__("bot").Var, "DRIVE_FOLDER_ID", None)
 
         if not folder_id:
-            raise Exception("❌ DRIVE_FOLDER_ID not set")
+            folder_id = os.environ.get("DRIVE_FOLDER_ID")
+        if not folder_id:
+            raise Exception("❌ DRIVE_FOLDER_ID not set in Heroku Config Vars")
 
         file = drive.CreateFile({
             "title": filename,
-            "parents": [{"id": folder_id}]  # For shared drive upload
+            "parents": [{"id": folder_id}]
         })
         file.SetContentFile(file_path)
         file.Upload()
@@ -47,6 +46,6 @@ async def upload_file(file_path, filename):
         raise e
 
 
-async def upload_to_drive(file_path):
+async def upload_to_drive(file_path, folder_id=None):
     filename = os.path.basename(file_path)
-    return await upload_file(file_path, filename)
+    return await upload_file(file_path, filename, folder_id)
