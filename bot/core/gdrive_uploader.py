@@ -1,70 +1,61 @@
 import os
 import json
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
-from google.oauth2.credentials import Credentials
-from google.auth.transport.requests import Request
-
+from pydrive2.auth import GoogleAuth
+from pydrive2.drive import GoogleDrive
 from bot import LOGS, Var
 
-# Google Drive Scope
-SCOPES = ["https://www.googleapis.com/auth/drive.file"]
-
 def gdrive_auth():
-    creds = None
     try:
-        # ✅ Option 1: Load from Heroku Config Var
+        gauth = GoogleAuth()
+
+        # Load client secrets from env var
+        if "GDRIVE_CREDS" in os.environ:
+            creds_json = json.loads(os.environ["GDRIVE_CREDS"])
+            with open("credentials.json", "w") as f:
+                json.dump(creds_json, f)
+
+        # Load token.json from env var if exists
         if "GDRIVE_TOKEN" in os.environ:
-            creds_json = json.loads(os.environ["GDRIVE_TOKEN"])
-            creds = Credentials.from_authorized_user_info(creds_json, SCOPES)
+            token_json = json.loads(os.environ["GDRIVE_TOKEN"])
+            with open("token.json", "w") as f:
+                json.dump(token_json, f)
 
-        # ✅ Option 2: Load from token.json file
-        elif os.path.exists("token.json"):
-            creds = Credentials.from_authorized_user_file("token.json", SCOPES)
-
+        # Authenticate
+        gauth.LoadCredentialsFile("token.json")
+        if gauth.credentials is None:
+            gauth.LoadClientConfigFile("credentials.json")
+            gauth.LocalWebserverAuth()
+        elif gauth.access_token_expired:
+            gauth.Refresh()
         else:
-            raise Exception("❌ No token found. Provide GDRIVE_TOKEN env var or token.json file")
+            gauth.Authorize()
 
-        # Refresh expired token
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
+        gauth.SaveCredentialsFile("token.json")
+        return GoogleDrive(gauth)
 
     except Exception as e:
         raise Exception(f"❌ GDrive Auth Failed: {str(e)}")
 
-    return creds
+
+async def upload_file(file_path, filename=None):
+    drive = gdrive_auth()
+    if not filename:
+        filename = os.path.basename(file_path)
+
+    try:
+        f = drive.CreateFile({
+            "title": filename,
+            "parents": [{"id": Var.DRIVE_FOLDER_ID}]
+        })
+        f.SetContentFile(file_path)
+        f.Upload()
+        link = f"https://drive.google.com/file/d/{f['id']}/view"
+        LOGS.info(f"✅ Uploaded to GDrive: {filename}")
+        return link
+    except Exception as e:
+        LOGS.error(f"GDrive upload failed: {filename} | {str(e)}")
+        return None
 
 
 async def upload_to_drive(file_path, filename=None):
     return await upload_file(file_path, filename)
-    """ Upload file to Google Drive """
-    creds = gdrive_auth()
-    service = build("drive", "v3", credentials=creds)
-
-    if not filename:
-        filename = os.path.basename(file_path)
-
-    file_metadata = {
-        "name": filename,
-        "parents": [Var.DRIVE_FOLDER_ID] if hasattr(Var, "DRIVE_FOLDER_ID") else []
-    }
-
-    media = MediaFileUpload(file_path, resumable=True)
-
-    try:
-        request = service.files().create(
-            body=file_metadata,
-            media_body=media,
-            fields="id, webViewLink"
-        )
-        file = request.execute()
-
-        file_id = file.get("id")
-        link = file.get("webViewLink")
-
-        LOGS.info(f"GDrive Upload Success: {filename} ({link})")
-        return link
-
-    except Exception as e:
-        LOGS.error(f"GDrive upload failed for {filename}: {str(e)}")
-        raise Exception(f"GDrive upload failed: {str(e)}")
