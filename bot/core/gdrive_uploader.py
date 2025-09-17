@@ -31,7 +31,7 @@ def gdrive_auth():
         raise Exception(f"❌ GDrive Auth Failed: {str(e)}")
 
 
-async def upload_file(file_path, filename):
+async def upload_file(file_path, filename=None):
     try:
         drive = gdrive_auth()
         folder_id = os.environ.get("DRIVE_FOLDER_ID") or Var.DRIVE_FOLDER_ID
