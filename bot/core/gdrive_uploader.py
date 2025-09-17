@@ -24,10 +24,15 @@ def gdrive_auth():
         raise Exception(f"❌ GDrive Auth Failed: {str(e)}")
 
 
-async def upload_file(file_path, filename):
+async def upload_file(file_path, filename, folder_id=None):
     try:
         drive = gdrive_auth()
-        folder_id = os.environ.get("DRIVE_FOLDER_ID") or getattr(__import__("bot").Var, "DRIVE_FOLDER_ID", None)
+        # Priority: passed folder_id > ENV > Var.DRIVE_FOLDER_ID
+        folder_id = (
+            folder_id
+            or os.environ.get("DRIVE_FOLDER_ID")
+            or getattr(__import__("bot").Var, "DRIVE_FOLDER_ID", None)
+        )
 
         if not folder_id:
             raise Exception("❌ DRIVE_FOLDER_ID not set")
@@ -45,6 +50,6 @@ async def upload_file(file_path, filename):
         raise e
 
 
-async def upload_to_drive(file_path):
+async def upload_to_drive(file_path, folder_id=None):
     filename = os.path.basename(file_path)
-    return await upload_file(file_path, filename)
+    return await upload_file(file_path, filename, folder_id)
