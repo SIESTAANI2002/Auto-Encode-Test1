@@ -2,7 +2,7 @@ import os
 import base64
 from pydrive2.auth import GoogleAuth
 from pydrive2.drive import GoogleDrive
-from bot import Var, rep
+from bot.core.reporter import rep
 from traceback import format_exc
 
 SERVICE_JSON_ENV = "GDRIVE_SERVICE_B64"  # Heroku config var name
