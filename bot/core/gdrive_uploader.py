@@ -4,7 +4,7 @@ import io
 import base64
 from pydrive2.auth import GoogleAuth
 from pydrive2.drive import GoogleDrive
-from bot import Var, rep
+from bot.core.reporter import rep
 
 # Decode Base64 service account and save temporarily
 def get_service_account_file():
