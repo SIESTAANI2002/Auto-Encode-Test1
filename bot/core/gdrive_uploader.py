@@ -1,37 +1,48 @@
 import os
 from pydrive2.auth import GoogleAuth
 from pydrive2.drive import GoogleDrive
+from oauth2client.service_account import ServiceAccountCredentials
 from bot.core.reporter import rep
 from traceback import format_exc
 
-# -------------------- Google Drive Authentication -------------------- #
+SERVICE_ACCOUNT_FILE = "service_account.json"  # Place this in bot root
+
 def gdrive_auth():
     try:
-        gauth = GoogleAuth()
-        # Load Service Account JSON
-        if not os.path.exists("service_account.json"):
+        if not os.path.exists(SERVICE_ACCOUNT_FILE):
             raise Exception("❌ service_account.json not found in bot directory")
 
-        gauth.LoadServiceConfigFile("service_account.json")
+        # Define scopes
+        scopes = ['https://www.googleapis.com/auth/drive']
+
+        # Load credentials from service account
+        credentials = ServiceAccountCredentials.from_json_keyfile_name(
+            SERVICE_ACCOUNT_FILE, scopes=scopes
+        )
+
+        # Authenticate with PyDrive
+        gauth = GoogleAuth()
+        gauth.credentials = credentials
         drive = GoogleDrive(gauth)
         return drive
 
     except Exception as e:
         raise Exception(f"❌ GDrive Auth Failed: {str(e)}")
 
-# -------------------- Upload File -------------------- #
-async def upload_file(file_path, filename):
+
+async def upload_file(file_path, filename, folder_id=None):
     try:
         drive = gdrive_auth()
-        # Folder ID from environment variable or Var
-        folder_id = os.environ.get("DRIVE_FOLDER_ID") or getattr(__import__("bot").Var, "DRIVE_FOLDER_ID", None)
 
+        # Use folder ID from environment or Var
+        if folder_id is None:
+            folder_id = os.environ.get("DRIVE_FOLDER_ID") or getattr(__import__("bot").Var, "DRIVE_FOLDER_ID", None)
         if not folder_id:
             raise Exception("❌ DRIVE_FOLDER_ID not set")
 
         file = drive.CreateFile({
             "title": filename,
-            "parents": [{"id": folder_id}]  # Shared Drive folder
+            "parents": [{"id": folder_id}]
         })
         file.SetContentFile(file_path)
         file.Upload()
@@ -41,7 +52,7 @@ async def upload_file(file_path, filename):
         await rep.report(format_exc(), "error")
         raise e
 
-# -------------------- Convenience Function -------------------- #
-async def upload_to_drive(file_path):
+
+async def upload_to_drive(file_path, folder_id=None):
     filename = os.path.basename(file_path)
-    return await upload_file(file_path, filename)
+    return await upload_file(file_path, filename, folder_id)
