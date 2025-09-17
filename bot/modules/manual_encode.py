@@ -67,7 +67,7 @@ async def queue_runner(client):
 
             # Upload to Google Drive (manual encode also)
             try:
-                await gdrive_uploader.upload_to_drive(output_path, Var.DRIVE_FOLDER_ID)
+                await gdrive_uploader.upload_to_drive(output_path)
             except Exception as e:
                 LOGS.error(f"GDrive upload failed for {filename}: {str(e)}")
 
