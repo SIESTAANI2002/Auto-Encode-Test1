@@ -1,51 +1,57 @@
 import os
 from pydrive2.auth import GoogleAuth
 from pydrive2.drive import GoogleDrive
-from bot import Var
-from .reporter import rep
+from bot import Var, LOGS
+from bot.core.reporter import rep
+from os import path as ospath
 
+# ---------------- Google Drive Auth ---------------- #
 def gdrive_auth():
+    gauth = GoogleAuth()
+
     try:
-        gauth = GoogleAuth()
+        # Load saved credentials
+        if ospath.exists("token.json"):
+            gauth.LoadCredentialsFile("token.json")
 
-        # Load credentials and token from repo files
-        gauth.LoadClientConfigFile("bot/credentials.json")
-        gauth.LoadCredentialsFile("bot/token.pickle")
-
-        # Refresh or authorize if needed
-        if gauth.access_token_expired:
+        if gauth.credentials is None:
+            gauth.LoadClientConfigFile("credentials.json")
+            gauth.LocalWebserverAuth()
+        elif gauth.access_token_expired:
             gauth.Refresh()
         else:
             gauth.Authorize()
 
-        return GoogleDrive(gauth)
-
+        gauth.SaveCredentialsFile("token.json")
     except Exception as e:
         raise Exception(f"❌ GDrive Auth Failed: {str(e)}")
 
+    return GoogleDrive(gauth)
 
-async def upload_to_drive(file_path: str, folder_id: str = None):
+# ---------------- Upload Function ---------------- #
+async def upload_to_drive(path: str) -> str:
     try:
         drive = gdrive_auth()
-        folder_id = folder_id or Var.DRIVE_FOLDER_ID
+        filename = ospath.basename(path)
 
-        file_name = os.path.basename(file_path)
-        gfile = drive.CreateFile({
-            "title": file_name,
-            "parents": [{"id": folder_id}]
+        file = drive.CreateFile({
+            "title": filename,
+            "parents": [{"id": Var.DRIVE_FOLDER_ID}]
         })
-        gfile.SetContentFile(file_path)
-        gfile.Upload()
 
-        file_link = f"https://drive.google.com/file/d/{gfile['id']}/view"
-        await rep.report(f"[INFO] File Uploaded to Drive: {file_link}", "info")
+        # Upload with Shared Drive support
+        file.Upload(param={'supportsAllDrives': True})
 
-        # Remove local file after upload
-        if os.path.exists(file_path):
-            os.remove(file_path)
+        # Make public
+        file.InsertPermission({
+            "type": "anyone",
+            "value": "anyone",
+            "role": "reader"
+        })
 
-        return file_link
+        LOGS.info(f"GDrive upload successful: {filename}")
+        return f"https://drive.google.com/file/d/{file['id']}/view"
 
     except Exception as e:
-        await rep.report(f"[ERROR] GDrive Upload Failed\n{str(e)}", "error")
-        raise
+        await rep.report(f"❌ GDrive Upload Failed: {str(e)}", "error")
+        raise e
