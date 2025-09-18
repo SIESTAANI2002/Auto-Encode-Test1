@@ -18,10 +18,7 @@ class MongoDB:
         if post_id:
             await self.__animes.update_one({'_id': ani_id}, {'$set': {"msg_id": post_id}}, upsert=True)
 
-    async def reboot(self):
-        await self.__animes.drop()
-
-async def getEpisodePost(self, ani_id, ep_no):
+    async def getEpisodePost(self, ani_id, ep_no):
         """
         Returns the Telegram post ID for a given anime episode if it exists.
         """
@@ -35,5 +32,8 @@ async def getEpisodePost(self, ani_id, ep_no):
                 if post_id:
                     return post_id
         return None
+
+    async def reboot(self):
+        await self.__animes.drop()
 
 db = MongoDB(Var.MONGO_URI, "FZAutoAnimes")
