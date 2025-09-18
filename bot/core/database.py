@@ -1,6 +1,5 @@
 # bot/database.py
-from motor.motor_asyncio 
-import AsyncIOMotorClient
+from motor.motor_asyncio import AsyncIOMotorClient
 from bot import Var
 
 class MongoDB:
