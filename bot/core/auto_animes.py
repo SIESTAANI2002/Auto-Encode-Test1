@@ -8,7 +8,7 @@ from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from bot import bot, bot_loop, Var, ani_cache, ffQueue, ffLock, ff_queued
 from .tordownload import TorDownloader
 from .database import db
-from .func_utils import getfeed, editMessage, encode, sendMessage, convertBytes
+from .func_utils import getfeed, encode, editMessage, sendMessage, convertBytes
 from .text_utils import TextEditor
 from .ffencoder import FFEncoder
 from .tguploader import TgUploader
@@ -16,7 +16,7 @@ from .reporter import rep
 
 btn_formatter = {
     '1080': '1080p',
-    '720': '𝟳𝟮𝟬𝗽'
+    '720': '720p'
 }
 
 async def fetch_animes():
@@ -30,11 +30,12 @@ async def fetch_animes():
             await rep.report(f"[INFO] Checking {qual} feed: {feed_link}", "info")
             try:
                 if (info := await getfeed(feed_link, 0)):
-                    bot_loop.create_task(get_animes(info.title, info.link))
+                    bot_loop.create_task(get_animes(info.title, info.link, qual))
             except Exception as e:
                 await rep.report(f"[ERROR] Fetching feed failed: {e}", "error")
 
-async def get_animes(name, torrent):
+
+async def get_animes(name, torrent, qual):
     try:
         aniInfo = TextEditor(name)
         await aniInfo.load_anilist()
@@ -49,12 +50,25 @@ async def get_animes(name, torrent):
             await rep.report(f"Torrent Skipped!\n\n{name}", "warning")
             return
 
-        await rep.report(f"New Anime Torrent Found!\n\n{name}", "info")
-        post_msg = await bot.send_photo(
-            Var.MAIN_CHANNEL,
-            photo=await aniInfo.get_poster(),
-            caption=await aniInfo.get_caption()
-        )
+        # Check if a post already exists for this episode
+        existing_post_id = await db.getEpisodePost(ani_id, ep_no)
+        post_msg = None
+        btns = []
+
+        if existing_post_id:
+            post_msg = await bot.get_messages(Var.MAIN_CHANNEL, message_ids=existing_post_id)
+            # Load existing buttons
+            if post_msg.reply_markup:
+                btns = post_msg.reply_markup.inline_keyboard
+
+        if not post_msg:
+            # Create new post if not exists
+            await rep.report(f"New Anime Torrent Found!\n\n{name} from {qual} feed", "info")
+            post_msg = await bot.send_photo(
+                Var.MAIN_CHANNEL,
+                photo=await aniInfo.get_poster(),
+                caption=await aniInfo.get_caption()
+            )
 
         stat_msg = await sendMessage(Var.MAIN_CHANNEL, f"‣ <b>Anime Name :</b> <b><i>{name}</i></b>\n\n<i>Downloading...</i>")
         dl = await TorDownloader("./downloads").download(torrent, name)
@@ -75,50 +89,45 @@ async def get_animes(name, torrent):
         await ffEvent.wait()
         await ffLock.acquire()
 
-        btns = []
-        uploaded_links = {}
+        filename = await aniInfo.get_upname(qual)
+        await editMessage(stat_msg, f"‣ <b>Anime Name :</b> <b><i>{name}</i></b>\n\n<i>Ready to Encode {qual}...</i>")
+        await asyncio.sleep(1)
 
-        # Loop through all qualities in RSS_ITEMS to check which are available
-        for qual in Var.RSS_ITEMS.keys():
-            filename = await aniInfo.get_upname(qual)
-            await editMessage(stat_msg, f"‣ <b>Anime Name :</b> <b><i>{name}</i></b>\n\n<i>Ready to Encode {qual}...</i>")
-            await asyncio.sleep(1)
+        await rep.report(f"Starting Encode for {qual}...", "info")
+        try:
+            out_path = await FFEncoder(stat_msg, dl, filename, qual).start_encode()
+        except Exception as e:
+            await rep.report(f"Error: {e}, Cancelled, Retry Again!", "error")
+            await stat_msg.delete()
+            ffLock.release()
+            return
 
-            await rep.report(f"Starting Encode for {qual}...", "info")
-            try:
-                out_path = await FFEncoder(stat_msg, dl, filename, qual).start_encode()
-            except Exception as e:
-                await rep.report(f"Error: {e}, Cancelled, Retry Again!", "error")
-                await stat_msg.delete()
-                ffLock.release()
-                return
+        await rep.report(f"Uploading {qual}...", "info")
+        await editMessage(stat_msg, f"‣ <b>Anime Name :</b> <b><i>{filename}</i></b>\n\n<i>Uploading...</i>")
+        await asyncio.sleep(1)
 
-            await rep.report("Successfully Compressed, Now Uploading...", "info")
-            await editMessage(stat_msg, f"‣ <b>Anime Name :</b> <b><i>{filename}</i></b>\n\n<i>Uploading...</i>")
-            await asyncio.sleep(1)
+        try:
+            msg = await TgUploader(stat_msg).upload(out_path, qual)
+        except Exception as e:
+            await rep.report(f"Error: {e}, Cancelled, Retry Again!", "error")
+            await stat_msg.delete()
+            ffLock.release()
+            return
 
-            try:
-                msg = await TgUploader(stat_msg).upload(out_path, qual)
-            except Exception as e:
-                await rep.report(f"Error: {e}, Cancelled, Retry Again!", "error")
-                await stat_msg.delete()
-                ffLock.release()
-                return
+        await rep.report(f"Successfully Uploaded {qual} to Telegram...", "info")
+        msg_id = msg.id
+        link = f"https://telegram.me/{(await bot.get_me()).username}?start={await encode('get-'+str(msg_id * abs(Var.FILE_STORE)))}"
 
-            await rep.report(f"Successfully Uploaded {qual} to Telegram...", "info")
-            msg_id = msg.id
-            link = f"https://telegram.me/{(await bot.get_me()).username}?start={await encode('get-'+str(msg_id * abs(Var.FILE_STORE)))}"
-            uploaded_links[qual] = (link, msg.document.file_size)
-            await db.saveAnime(ani_id, ep_no, qual, post_id)
-            bot_loop.create_task(extra_utils(msg_id, out_path))
+        # Add button for this quality
+        if btns and len(btns[-1]) == 1:
+            btns[-1].append(InlineKeyboardButton(f"{btn_formatter[qual]} - {convertBytes(msg.document.file_size)}", url=link))
+        else:
+            btns.append([InlineKeyboardButton(f"{btn_formatter[qual]} - {convertBytes(msg.document.file_size)}", url=link)])
 
-        # Build buttons for all available qualities
-        btn_row = []
-        for q, (url, fsize) in uploaded_links.items():
-            btn_row.append(InlineKeyboardButton(f"{btn_formatter[q]} - {convertBytes(fsize)}", url=url))
-        if btn_row:
-            # Make it a single row
-            await editMessage(post_msg, post_msg.caption.html if post_msg.caption else "", InlineKeyboardMarkup([btn_row]))
+        await editMessage(post_msg, post_msg.caption.html if post_msg.caption else "", InlineKeyboardMarkup(btns))
+
+        await db.saveAnime(ani_id, ep_no, qual, post_id)
+        bot_loop.create_task(extra_utils(msg_id, out_path))
 
         ffLock.release()
         await stat_msg.delete()
@@ -128,8 +137,10 @@ async def get_animes(name, torrent):
     except Exception as error:
         await rep.report(format_exc(), "error")
 
+
 async def extra_utils(msg_id, out_path):
     msg = await bot.get_messages(Var.FILE_STORE, message_ids=msg_id)
+
     if Var.BACKUP_CHANNEL != 0:
         for chat_id in Var.BACKUP_CHANNEL.split():
             await msg.copy(int(chat_id))
