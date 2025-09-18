@@ -1,13 +1,14 @@
 import asyncio
 from traceback import format_exc
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-from bot import bot, bot_loop, Var, db
+from bot import bot, bot_loop, Var
 from bot.core.func_utils import handle_logs
 from bot.core.text_utils import TextEditor
 from bot.core.tordownload import TorDownloader
 from bot.core.ffencoder import start_encode
 from bot.core.reporter import rep
 from bot.core.feed_utils import getfeed
+from bot.core.database import db
 
 btn_formatter = {
     "720": "720p",
