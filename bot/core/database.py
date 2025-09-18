@@ -21,4 +21,19 @@ class MongoDB:
     async def reboot(self):
         await self.__animes.drop()
 
+async def getEpisodePost(self, ani_id, ep_no):
+        """
+        Returns the Telegram post ID for a given anime episode if it exists.
+        """
+        anime_data = await self.getAnime(ani_id)
+        if anime_data:
+            # Check if episode exists
+            episode_data = anime_data.get(ep_no)
+            if episode_data:
+                # If we saved post_id under 'msg_id' (as in saveAnime), return it
+                post_id = anime_data.get("msg_id")
+                if post_id:
+                    return post_id
+        return None
+
 db = MongoDB(Var.MONGO_URI, "FZAutoAnimes")
