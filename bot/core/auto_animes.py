@@ -1,113 +1,151 @@
-from asyncio import gather, create_task, sleep as asleep, Event, Queue
+from asyncio import gather, create_task, sleep as asleep, Event
 from os import path as ospath
-from aiofiles.os import remove as aioremove
+from aiofiles.os import remove as aioremove, mkdir
 from traceback import format_exc
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from bot import bot, bot_loop, Var, ani_cache, ffQueue, ffLock, ff_queued
 from .tordownload import TorDownloader
 from .database import db
-from .func_utils import sendMessage, editMessage, convertBytes, getfeed
+from .func_utils import getfeed, encode, editMessage, sendMessage, convertBytes
 from .text_utils import TextEditor
 from .ffencoder import FFEncoder
 from .tguploader import TgUploader
 from .reporter import rep
 
-btn_formatter = {'1080':'1080p', '720':'𝟳𝟮𝟬𝗽'}
+btn_formatter = {
+    '1080':'1080p',
+    '720':'𝟳𝟮𝟬𝗽'
+}
+
+# Store post_id per episode to add multiple buttons under the same post
+episode_posts = {}  # key: (ani_id, ep_no)
 
 async def fetch_animes():
     await rep.report("Fetch Animes Started !!", "info")
     while True:
         await asleep(60)
         if ani_cache['fetch_animes']:
-            tasks = []
-            for qual, feed_url in Var.RSS_ITEMS.items():
-                await rep.report(f"[INFO] Checking {qual} feed: {feed_url}", "info")
-                info = await getfeed(feed_url, 0)
-                if info:
-                    tasks.append(get_animes(info.title, info.link, qual))
-            if tasks:
-                await gather(*tasks)
+            for qual, feed_link in Var.RSS_ITEMS.items():
+                await rep.report(f"[INFO] Checking {qual} feed: {feed_link}", "info")
+                if (info := await getfeed(feed_link, 0)):
+                    bot_loop.create_task(get_animes(info.title, info.link, qual))
 
-async def get_animes(name, torrent, qual_feed):
+async def get_animes(name, torrent, qual, force=False):
     try:
         aniInfo = TextEditor(name)
         await aniInfo.load_anilist()
-        ani_id = aniInfo.adata.get('id')
-        ep_no = aniInfo.pdata.get("episode_number")
+        ani_id, ep_no = aniInfo.adata.get('id'), aniInfo.pdata.get("episode_number")
 
         if ani_id not in ani_cache['ongoing']:
             ani_cache['ongoing'].add(ani_id)
-        else:
+        elif not force:
+            return
+        if not force and ani_id in ani_cache['completed']:
             return
 
-        # Skip if episode already completed in DB
-        if ep_data := await db.getAnime(ani_id):
-            if ep_data.get(ep_no):
-                return
-
-        # Download torrent
-        await rep.report(f"New Anime Torrent Found!\n{name} from {qual_feed} feed", "info")
-        dl = await TorDownloader("./downloads").download(torrent, name)
-        if not dl or not ospath.exists(dl):
-            await rep.report(f"File Download Incomplete, Try Again", "error")
+        if "[Batch]" in name:
+            await rep.report(f"Torrent Skipped!\n\n{name}", "warning")
             return
 
-        # Check if a post already exists for this episode
-        post_id = None
-        if ep_data and (existing_post_id := ep_data.get(ep_no, {}).get('post_id')):
-            post_id = existing_post_id
+        await rep.report(f"New Anime Torrent Found!\n\n{name} from {qual} feed", "info")
+
+        # Use existing post if exists, else create new
+        post_msg = None
+        if (ani_id, ep_no) in episode_posts:
+            post_msg = episode_posts[(ani_id, ep_no)]
         else:
-            # Create new post
             post_msg = await bot.send_photo(
                 Var.MAIN_CHANNEL,
                 photo=await aniInfo.get_poster(),
                 caption=await aniInfo.get_caption()
             )
-            post_id = post_msg.id
+            episode_posts[(ani_id, ep_no)] = post_msg
 
-        # Add task to queue for encoding & uploading
+        await asleep(1.5)
+        stat_msg = await sendMessage(Var.MAIN_CHANNEL, f"‣ <b>Anime Name :</b> <b><i>{name}</i></b>\n\n<i>Downloading...</i>")
+
+        # Download
+        dl = await TorDownloader("./downloads").download(torrent, name)
+        if not dl or not ospath.exists(dl):
+            await rep.report(f"File Download Incomplete, Try Again", "error")
+            await stat_msg.delete()
+            return
+
+        # FFQueue Event
+        key = (ani_id, ep_no, qual)
         ffEvent = Event()
-        ff_queued[(ani_id, ep_no, qual_feed)] = ffEvent
-        await ffQueue.put((ani_id, ep_no, qual_feed, dl, aniInfo, post_id))
+        ff_queued[key] = ffEvent
+
+        if ffLock.locked():
+            await editMessage(stat_msg, f"‣ <b>Anime Name :</b> <b><i>{name}</i></b>\n\n<i>Queued to Encode...</i>")
+            await rep.report("Added Task to Queue...", "info")
+        await ffQueue.put(key)
         await ffEvent.wait()
+
+        await ffLock.acquire()
+        filename = await aniInfo.get_upname(qual)
+        await editMessage(stat_msg, f"‣ <b>Anime Name :</b> <b><i>{name}</i></b>\n\n<i>Ready to Encode...</i>")
+        await asleep(1.5)
+        await rep.report("Starting Encode...", "info")
+
+        try:
+            out_path = await FFEncoder(stat_msg, dl, filename, qual).start_encode()
+        except Exception as e:
+            await rep.report(f"Error: {e}, Cancelled, Retry Again!", "error")
+            await stat_msg.delete()
+            ffLock.release()
+            return
+
+        await rep.report("Successfully Compressed, Going To Upload...", "info")
+        await editMessage(stat_msg, f"‣ <b>Anime Name :</b> <b><i>{filename}</i></b>\n\n<i>Ready to Upload...</i>")
+        await asleep(1.5)
+
+        try:
+            msg = await TgUploader(stat_msg).upload(out_path, qual)
+        except Exception as e:
+            await rep.report(f"Error: {e}, Cancelled, Retry Again!", "error")
+            await stat_msg.delete()
+            ffLock.release()
+            return
+
+        await rep.report("Successfully Uploaded File into Telegram...", "info")
+
+        # Add button to post
+        post_id = post_msg.id
+        link = f"https://telegram.me/{(await bot.get_me()).username}?start={await encode('get-'+str(msg.id * abs(Var.FILE_STORE)))}"
+
+        # Retrieve existing buttons
+        if post_msg.reply_markup and post_msg.reply_markup.inline_keyboard:
+            btns = post_msg.reply_markup.inline_keyboard
+        else:
+            btns = []
+
+        # Append new button for current quality
+        btns.append([InlineKeyboardButton(f"{btn_formatter[qual]} - {convertBytes(msg.document.file_size)}", url=link)])
+        await editMessage(post_msg, post_msg.caption.html if post_msg.caption else "", InlineKeyboardMarkup(btns))
+
+        # Save to DB
+        await db.saveAnime(ani_id, ep_no, qual, post_id)
+        bot_loop.create_task(extra_utils(msg.id, out_path, ani_id, ep_no, qual))
+
+        ffLock.release()
+        await stat_msg.delete()
+        await aioremove(dl)
         ani_cache['completed'].add(ani_id)
 
-    except Exception:
+    except Exception as error:
         await rep.report(format_exc(), "error")
 
+async def extra_utils(msg_id, out_path, ani_id, ep_no, qual):
+    msg = await bot.get_messages(Var.FILE_STORE, message_ids=msg_id)
 
-async def encode_worker():
-    while True:
-        ani_id, ep_no, qual_feed, dl, aniInfo, post_id = await ffQueue.get()
-        await ffLock.acquire()
-        try:
-            filename = await aniInfo.get_upname(qual_feed)
-            out_path = await FFEncoder(None, dl, filename, qual_feed).start_encode()
-            msg = await TgUploader(None).upload(out_path, qual_feed)
-            msg_id = msg.id
-            link = f"https://t.me/{(await bot.get_me()).username}?start=get-{msg_id}"
+    if Var.BACKUP_CHANNEL != 0:
+        for chat_id in Var.BACKUP_CHANNEL.split():
+            await msg.copy(int(chat_id))
 
-            # Load current buttons
-            ep_data = await db.getAnime(ani_id)
-            current_buttons = []
-            if ep_data.get(ep_no):
-                for q, data in ep_data[ep_no].items():
-                    if data.get('msg_id'):
-                        q_link = f"https://t.me/{(await bot.get_me()).username}?start=get-{data['msg_id']}"
-                        current_buttons.append([InlineKeyboardButton(f"{btn_formatter[q]} - {convertBytes(data['file_size'])}", url=q_link)])
-
-            # Add new button
-            current_buttons.append([InlineKeyboardButton(f"{btn_formatter[qual_feed]} - {convertBytes(msg.document.file_size)}", url=link)])
-            await editMessage(post_id=post_id, caption=aniInfo.caption, reply_markup=InlineKeyboardMarkup(current_buttons))
-
-            # Save in DB
-            await db.saveAnime(ani_id, ep_no, qual_feed, post_id, msg.document.file_size)
-
-            await aioremove(dl)
-
-        except Exception as e:
-            await rep.report(f"Encoding/Uploading Failed: {e}", "error")
-        finally:
-            ffLock.release()
-            ffQueue.task_done()
+    # Set the FFQueue Event
+    key = (ani_id, ep_no, qual)
+    if key in ff_queued:
+        ff_queued[key].set()
+        del ff_queued[key]
