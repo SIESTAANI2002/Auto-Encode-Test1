@@ -1,14 +1,18 @@
 import asyncio
+from asyncio import Event
+from os import path as ospath
+from aiofiles.os import remove as aioremove
 from traceback import format_exc
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-from bot import bot, bot_loop, Var
-from bot.core.func_utils import handle_logs
-from bot.core.text_utils import TextEditor
-from bot.core.tordownload import TorDownloader
-from bot.core.ffencoder import start_encode
-from bot.core.reporter import rep
-from bot.core.feed_utils import getfeed
+
+from bot import bot, bot_loop, Var, ani_cache, ffLock
+from .tordownload import TorDownloader
 from bot.core.database import db
+from .func_utils import getfeed, encode, editMessage, sendMessage, convertBytes
+from .text_utils import TextEditor
+from .ffencoder import FFEncoder
+from .tguploader import TgUploader
+from .reporter import rep
 
 btn_formatter = {
     "720": "720p",
