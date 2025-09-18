@@ -18,33 +18,26 @@ class MongoDB:
         if post_id:
             await self.__animes.update_one({'_id': ani_id}, {'$set': {"msg_id": post_id}}, upsert=True)
 
+    async def saveEpisodePost(self, ani_id, ep_no, post_id):
+        """
+        Saves the Telegram post ID for a specific anime episode.
+        """
+        await self.__animes.update_one(
+            {'_id': ani_id},
+            {'$set': {f"episodes.{ep_no}.post_id": post_id}},
+            upsert=True
+        )
+
     async def getEpisodePost(self, ani_id, ep_no):
         """
         Returns the Telegram post ID for a given anime episode if it exists.
         """
-        anime_data = await self.getAnime(ani_id)
-        if anime_data:
-            # Check if episode exists
-            episode_data = anime_data.get(ep_no)
-            if episode_data:
-                # If we saved post_id under 'msg_id' (as in saveAnime), return it
-                post_id = anime_data.get("msg_id")
-                if post_id:
-                    return post_id
-        return None
-
-    async def saveEpisodePost(self, ani_id, ep_no, post_id):
-    await self.__animes.update_one(
-        {'_id': ani_id},
-        {'$set': {f"episodes.{ep_no}.post_id": post_id}},
-        upsert=True
-    )
-
-async def getEpisodePost(self, ani_id, ep_no):
-    ani_data = await self.getAnime(ani_id)
-    return ani_data.get("episodes", {}).get(ep_no, {}).get("post_id")
+        ani_data = await self.getAnime(ani_id)
+        return ani_data.get("episodes", {}).get(ep_no, {}).get("post_id")
 
     async def reboot(self):
         await self.__animes.drop()
 
+
+# Instantiate the DB
 db = MongoDB(Var.MONGO_URI, "FZAutoAnimes")
