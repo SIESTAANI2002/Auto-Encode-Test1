@@ -33,6 +33,17 @@ class MongoDB:
                     return post_id
         return None
 
+    async def saveEpisodePost(self, ani_id, ep_no, post_id):
+    await self.__animes.update_one(
+        {'_id': ani_id},
+        {'$set': {f"episodes.{ep_no}.post_id": post_id}},
+        upsert=True
+    )
+
+async def getEpisodePost(self, ani_id, ep_no):
+    ani_data = await self.getAnime(ani_id)
+    return ani_data.get("episodes", {}).get(ep_no, {}).get("post_id")
+
     async def reboot(self):
         await self.__animes.drop()
 
