@@ -5,7 +5,7 @@ from bot.core.ffencoder import FFEncoder
 from bot.core.tguploader import TgUploader
 from bot.core.text_utils import TextEditor
 from bot.core.reporter import rep
-from bot.database import db
+from bot.core.database import db
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 # Torrent Downloader instance
