@@ -78,10 +78,14 @@ async def get_animes(name, torrent, qual, force=False):
         elif not force:
             return
 
+        # check DB: if this quality already present for this episode -> skip
         if not force:
-            anime_doc = await db.getAnime(ani_id)
-            if anime_doc and anime_doc.get(ep_no):
-                pass
+           anime_doc = await db.getAnime(ani_id)
+        if anime_doc:
+           ep_info = anime_doc.get(ep_no, {})
+        if ep_info.get(qual):  # this quality already uploaded
+            await rep.report(f"{qual} already uploaded for {name}, skipping.", "info")
+            return
 
         if "[Batch]" in name:
             await rep.report(f"Torrent Skipped (Batch): {name}", "warning")
