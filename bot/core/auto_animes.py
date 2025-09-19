@@ -26,6 +26,7 @@ episode_posts = {}  # (ani_id, ep_no) -> Message
 
 
 async def fetch_animes():
+    """Main loop to check RSS feeds and schedule downloads."""
     await rep.report("Fetch Animes Started !!", "info")
     while True:
         try:
@@ -49,6 +50,7 @@ async def fetch_animes():
 
 
 async def get_animes(name, torrent, qual, force=False):
+    """Process a single RSS entry (download → encode → upload → post)."""
     try:
         aniInfo = TextEditor(name)
         await aniInfo.load_anilist()
@@ -58,14 +60,12 @@ async def get_animes(name, torrent, qual, force=False):
         if not ani_id:
             ani_id = abs(hash(name)) % (10 ** 9)
 
-        # ✅ dedupe fix: unique key includes quality
-        unique_key = f"{ani_id}-{ep_no}-{qual}"
-        if unique_key in ani_cache.get('ongoing', set()):
-            if not force:
-                return
-        ani_cache.setdefault('ongoing', set()).add(unique_key)
+        if ani_id not in ani_cache.get('ongoing', set()):
+            ani_cache.setdefault('ongoing', set()).add(ani_id)
+        elif not force:
+            return
 
-        # ✅ DB check indentation fixed
+        # check DB: if this quality already uploaded
         if not force:
             anime_doc = await db.getAnime(ani_id)
             if anime_doc:
@@ -105,13 +105,6 @@ async def get_animes(name, torrent, qual, force=False):
             post_id = post_msg.id
             episode_posts[(ani_id, ep_no)] = post_msg
 
-        anime_doc = await db.getAnime(ani_id)
-        if anime_doc:
-            ep_info = anime_doc.get(ep_no, {})
-            if ep_info and ep_info.get(qual):
-                await rep.report(f"Quality {qual} already uploaded for {name}, skipping.", "info")
-                return
-
         stat_msg = await sendMessage(
             Var.MAIN_CHANNEL,
             f"‣ <b>Anime Name :</b> <b><i>{name}</i></b>\n\n<i>Downloading...</i>"
@@ -132,9 +125,10 @@ async def get_animes(name, torrent, qual, force=False):
 
         try:
             filename = await aniInfo.get_upname(qual)
-            out_path = f"./encode/{filename}" if filename else None
-
-            await editMessage(stat_msg, f"‣ <b>Anime Name :</b> <b><i>{filename or name}</i></b>\n\n<i>Encoding Started...</i>")
+            await editMessage(
+                stat_msg,
+                f"‣ <b>Anime Name :</b> <b><i>{filename or name}</i></b>\n\n<i>Encoding Started...</i>"
+            )
 
             try:
                 encoded_path = await FFEncoder(stat_msg, dl, filename, qual).start_encode()
@@ -167,6 +161,7 @@ async def get_animes(name, torrent, qual, force=False):
                 url=link
             )
 
+            # --- FIXED BUTTON MERGING ---
             try:
                 if (ani_id, ep_no) in episode_posts:
                     post_msg = episode_posts[(ani_id, ep_no)]
@@ -175,17 +170,20 @@ async def get_animes(name, torrent, qual, force=False):
 
                 existing_kb = []
                 if post_msg.reply_markup and hasattr(post_msg.reply_markup, "inline_keyboard"):
-                    existing_kb = post_msg.reply_markup.inline_keyboard or []
+                    existing_kb = [row[:] for row in post_msg.reply_markup.inline_keyboard]
 
-                if existing_kb and len(existing_kb[-1]) == 1:
-                    existing_kb[-1].append(button)
+                btn_text = f"{btn_formatter.get(qual, qual)} - {convertBytes(uploaded_msg.document.file_size)}"
+                if any(btn_text in btn.text for row in existing_kb for btn in row):
+                    await rep.report(f"Button {btn_text} already present, skipping.", "info")
                 else:
-                    existing_kb.append([button])
+                    if existing_kb and len(existing_kb[-1]) == 1:
+                        existing_kb[-1].append(button)
+                    else:
+                        existing_kb.append([button])
 
-                await editMessage(
-                    post_msg,
-                    post_msg.caption.html if post_msg.caption else "",
-                    InlineKeyboardMarkup(existing_kb)
+                await post_msg.edit_caption(
+                    caption=post_msg.caption.html if post_msg.caption else "",
+                    reply_markup=InlineKeyboardMarkup(existing_kb)
                 )
             except Exception as e:
                 await rep.report(f"Failed to edit post buttons: {e}", "error")
@@ -224,6 +222,7 @@ async def get_animes(name, torrent, qual, force=False):
 
 
 async def extra_utils(msg_id, out_path):
+    """Copy to backup channels if configured."""
     try:
         msg = await bot.get_messages(Var.FILE_STORE, message_ids=msg_id)
         if Var.BACKUP_CHANNEL and Var.BACKUP_CHANNEL != "0":
