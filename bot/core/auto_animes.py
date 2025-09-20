@@ -32,7 +32,6 @@ async def fetch_animes():
             await asyncio.sleep(60)
             if not ani_cache.get('fetch_animes'):
                 continue
-
             if not Var.RSS_ITEMS:
                 await rep.report("No RSS feeds configured (Var.RSS_ITEMS empty).", "warning")
                 continue
@@ -63,10 +62,16 @@ async def get_animes(name, torrent, qual, force=False):
         elif not force:
             return
 
-        if not force:
-           anime_doc = await db.getAnime(ani_id)
-        if anime_doc:
-           ep_info = anime_doc.get(ep_no, {})
+        ep_info = {}
+        try:
+            anime_doc = await db.getAnime(ani_id)
+            if anime_doc:
+                ep_info = anime_doc.get("episodes", {}).get(str(ep_no), {})
+        except Exception:
+            anime_doc = {}
+            ep_info = {}
+
+        # skip if this quality already uploaded
         if ep_info.get(qual):
             await rep.report(f"{qual} already uploaded for {name}, skipping.", "info")
             return
@@ -77,61 +82,7 @@ async def get_animes(name, torrent, qual, force=False):
 
         await rep.report(f"New Anime Torrent Found!\n{name} from {qual} feed", "info")
 
-        post_msg = None
-        post_id = None
-        try:
-            existing_post_id = await db.getEpisodePost(ani_id, ep_no)
-        except Exception:
-            existing_post_id = None
-
-        if existing_post_id:
-            try:
-                post_msg = await bot.get_messages(Var.MAIN_CHANNEL, message_ids=existing_post_id)
-                post_id = existing_post_id
-            except Exception:
-                post_msg = None
-                post_id = None
-
-
-async def get_animes(name, torrent, qual, force=False):
-    """
-    Process a single RSS entry:
-      - resolve Ani metadata
-      - skip already uploaded quality (per DB)
-      - create or reuse one post per episode
-      - download .torrent, encode (in feed quality), upload
-      - append button for that quality to the post
-    """
-    try:
-        aniInfo = TextEditor(name)
-        await aniInfo.load_anilist()
-        ani_id = aniInfo.adata.get('id')
-        ep_no = aniInfo.pdata.get("episode_number")
-
-        if not ani_id:
-            ani_id = abs(hash(name)) % (10 ** 9)
-
-        if ani_id not in ani_cache.get('ongoing', set()):
-            ani_cache.setdefault('ongoing', set()).add(ani_id)
-        elif not force:
-            return
-
-        # Safe initialization of ep_info
-        anime_doc = await db.getAnime(ani_id)
-        ep_info = {}
-        if anime_doc:
-            ep_info = anime_doc.get(ep_no, {})
-
-        if ep_info.get(qual):  # this quality already uploaded
-            await rep.report(f"{qual} already uploaded for {name}, skipping.", "info")
-            return
-
-        if "[Batch]" in name:
-            await rep.report(f"Torrent Skipped (Batch): {name}", "warning")
-            return
-
-        await rep.report(f"New Anime Torrent Found!\n{name} from {qual} feed", "info")
-
+        # get or create post
         post_msg = None
         post_id = None
         try:
@@ -157,66 +108,57 @@ async def get_animes(name, torrent, qual, force=False):
             post_id = post_msg.id
             episode_posts[(ani_id, ep_no)] = post_msg
 
-        stat_msg = await sendMessage(
-            Var.MAIN_CHANNEL, 
-            f"‣ <b>Anime Name :</b> <b><i>{name}</i></b>\n\n<i>Downloading...</i>"
-        )
+        # check DB again to avoid duplicate quality upload
+        try:
+            anime_doc = await db.getAnime(ani_id)
+            if anime_doc:
+                ep_info = anime_doc.get("episodes", {}).get(str(ep_no), {})
+            if ep_info.get(qual):
+                await rep.report(f"{qual} already uploaded for {name}, skipping.", "info")
+                return
+        except Exception:
+            pass
 
+        stat_msg = await sendMessage(Var.MAIN_CHANNEL, f"‣ <b>Anime Name :</b> <b><i>{name}</i></b>\n\n<i>Downloading...</i>")
+
+        # download
         dl = await TorDownloader("./downloads").download(torrent, name)
         if not dl or not ospath.exists(dl):
             await rep.report(f"File Download Incomplete, Try Again: {name}", "error")
             try:
-                if stat_msg:
-                    await stat_msg.delete()
+                await stat_msg.delete()
             except Exception:
                 pass
             return
 
-        # safe editMessage call
-        try:
-            if stat_msg:
-                await editMessage(stat_msg, f"‣ <b>Anime Name :</b> <b><i>{name}</i></b>\n\n<i>Ready to Encode...</i>")
-        except Exception:
-            pass
-
+        await editMessage(stat_msg, f"‣ <b>Anime Name :</b> <b><i>{name}</i></b>\n\n<i>Ready to Encode...</i>")
         await rep.report(f"Queued for encode: {name} [{qual}]", "info")
         await ffLock.acquire()
 
         try:
             filename = await aniInfo.get_upname(qual)
             out_path = f"./encode/{filename}" if filename else None
-
-            try:
-                if stat_msg:
-                    await editMessage(stat_msg, f"‣ <b>Anime Name :</b> <b><i>{filename or name}</i></b>\n\n<i>Encoding Started...</i>")
-            except Exception:
-                pass
+            await editMessage(stat_msg, f"‣ <b>Anime Name :</b> <b><i>{filename or name}</i></b>\n\n<i>Encoding Started...</i>")
 
             try:
                 encoded_path = await FFEncoder(stat_msg, dl, filename, qual).start_encode()
             except Exception as e:
                 await rep.report(f"Error encoding {name}: {e}", "error")
                 try:
-                    if stat_msg:
-                        await stat_msg.delete()
+                    await stat_msg.delete()
                 except Exception:
                     pass
                 return
 
             await rep.report(f"Successfully Compressed {filename}", "info")
-            try:
-                if stat_msg:
-                    await editMessage(stat_msg, f"‣ <b>Anime Name :</b> <b><i>{filename}</i></b>\n\n<i>Uploading {qual}...</i>")
-            except Exception:
-                pass
+            await editMessage(stat_msg, f"‣ <b>Anime Name :</b> <b><i>{filename}</i></b>\n\n<i>Uploading {qual}...</i>")
 
             try:
                 uploaded_msg = await TgUploader(stat_msg).upload(encoded_path, qual)
             except Exception as e:
                 await rep.report(f"Error uploading {filename}: {e}", "error")
                 try:
-                    if stat_msg:
-                        await stat_msg.delete()
+                    await stat_msg.delete()
                 except Exception:
                     pass
                 return
@@ -224,11 +166,9 @@ async def get_animes(name, torrent, qual, force=False):
             me = await bot.get_me()
             tg_username = me.username
             link = f"https://telegram.me/{tg_username}?start={await encode('get-'+str(uploaded_msg.id * abs(Var.FILE_STORE)))}"
-            button = InlineKeyboardButton(
-                f"{btn_formatter.get(qual, qual)} - {convertBytes(uploaded_msg.document.file_size)}", 
-                url=link
-            )
+            button = InlineKeyboardButton(f"{btn_formatter.get(qual, qual)} - {convertBytes(uploaded_msg.document.file_size)}", url=link)
 
+            # edit post buttons
             try:
                 if (ani_id, ep_no) in episode_posts:
                     post_msg = episode_posts[(ani_id, ep_no)]
@@ -248,7 +188,9 @@ async def get_animes(name, torrent, qual, force=False):
             except Exception as e:
                 await rep.report(f"Failed to edit post buttons: {e}", "error")
 
+            # save in DB
             try:
+                await db.saveEpisodePost(ani_id, ep_no, post_id)
                 await db.saveAnime(ani_id, ep_no, qual, post_id)
             except Exception:
                 pass
@@ -261,15 +203,12 @@ async def get_animes(name, torrent, qual, force=False):
                 ffLock.release()
             except Exception:
                 pass
-
             try:
                 await aioremove(dl)
             except Exception:
                 pass
-
             try:
-                if stat_msg:
-                    await stat_msg.delete()
+                await stat_msg.delete()
             except Exception:
                 pass
 
@@ -277,6 +216,7 @@ async def get_animes(name, torrent, qual, force=False):
 
     except Exception:
         await rep.report(format_exc(), "error")
+
 
 async def extra_utils(msg_id, out_path):
     try:
