@@ -1,64 +1,55 @@
 # bot/core/database.py
+import asyncio
 from motor.motor_asyncio import AsyncIOMotorClient
 from bot import Var
 
-class MongoDB:
-    def __init__(self, uri, database_name):
-        self.client = AsyncIOMotorClient(uri)
-        self.db = self.client[database_name]
-        self.animes = self.db.animes[Var.BOT_TOKEN.split(':')[0]]
+class Database:
+    def __init__(self, uri=None, name="AnimeDB"):
+        self.client = AsyncIOMotorClient(uri or Var.DATABASE_URL)
+        self.db = self.client[name]
+        self.animes = self.db.animes   # stores { ani_id: { ep_no: { qual: post_id }, ... } }
+        self.episodes = self.db.episodes  # stores { (ani_id, ep_no): post_id }
 
-    async def getAnime(self, ani_id):
-        """Get anime document by ani_id"""
-        doc = await self.animes.find_one({'_id': ani_id})
+    async def getAnime(self, ani_id: str | int) -> dict:
+        """Return anime document or {}."""
+        doc = await self.animes.find_one({"_id": str(ani_id)})
         return doc or {}
 
-    async def saveAnime(self, ani_id, ep_no, qual, post_id=None):
-        """Mark quality as uploaded for an episode, and save post_id"""
-        # Fetch existing episode info
-        anime_doc = await self.getAnime(ani_id)
-        ep_info = anime_doc.get(str(ep_no), {}) if anime_doc else {}
+    async def saveAnime(self, ani_id: str | int, ep_no: str, qual: str, post_id: int):
+        """Save one episode quality for anime."""
+        ani_id = str(ani_id)
+        ep_no = str(ep_no)
+        update = {
+            "$set": {f"{ep_no}.{qual}": post_id}
+        }
+        await self.animes.update_one({"_id": ani_id}, update, upsert=True)
 
-        # Update the quality
-        ep_info[qual] = True
+    async def getEpisodePost(self, ani_id: str | int, ep_no: str) -> int | None:
+        """Return stored post_id for episode if exists."""
+        ani_id = str(ani_id)
+        ep_no = str(ep_no)
+        key = f"{ani_id}:{ep_no}"
+        doc = await self.episodes.find_one({"_id": key})
+        return doc["post_id"] if doc else None
 
-        # Save episode info
-        await self.animes.update_one(
-            {'_id': ani_id},
-            {'$set': {str(ep_no): ep_info}},
+    async def saveEpisodePost(self, ani_id: str | int, ep_no: str, post_id: int):
+        """Save mapping (ani_id, ep_no) -> post_id."""
+        ani_id = str(ani_id)
+        ep_no = str(ep_no)
+        key = f"{ani_id}:{ep_no}"
+        await self.episodes.update_one(
+            {"_id": key},
+            {"$set": {"post_id": post_id}},
             upsert=True
         )
 
-        # Save global post_id if provided
-        if post_id:
-            await self.animes.update_one(
-                {'_id': ani_id},
-                {'$set': {"msg_id": post_id}},
-                upsert=True
-            )
-
-    async def getEpisodePost(self, ani_id, ep_no):
-        """Return Telegram post_id for a given anime episode"""
-        ani_data = await self.getAnime(ani_id)
-        # Check if post_id saved for this episode
-        ep_info = ani_data.get(str(ep_no), {})
-        post_id = ep_info.get("post_id")
-        if post_id:
-            return post_id
-        # Fallback: global msg_id
-        return ani_data.get("msg_id")
-
-    async def saveEpisodePost(self, ani_id, ep_no, post_id):
-        """Save post_id specifically under episode info"""
-        await self.animes.update_one(
-            {'_id': ani_id},
-            {'$set': {f"{ep_no}.post_id": post_id}},
-            upsert=True
-        )
-
-    async def reboot(self):
-        """Drop the collection (for testing)"""
-        await self.animes.drop()
+    async def deleteEpisode(self, ani_id: str | int, ep_no: str):
+        """Remove one episode from both collections."""
+        ani_id = str(ani_id)
+        ep_no = str(ep_no)
+        await self.animes.update_one({"_id": ani_id}, {"$unset": {ep_no: ""}})
+        await self.episodes.delete_one({"_id": f"{ani_id}:{ep_no}"})
 
 
-db = MongoDB(Var.MONGO_URI, "FZAutoAnimes")
+# global instance
+db = Database()
