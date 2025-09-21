@@ -5,7 +5,7 @@ from bot import Var
 
 class Database:
     def __init__(self, uri=None, name="AnimeDB"):
-        self.client = AsyncIOMotorClient(uri or Var.MONOGO_URI)
+        self.client = AsyncIOMotorClient(uri or Var.MONGO_URI)
         self.db = self.client[name]
         self.animes = self.db.animes   # stores { ani_id: { ep_no: { qual: post_id }, ... } }
         self.episodes = self.db.episodes  # stores { (ani_id, ep_no): post_id }
