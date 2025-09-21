@@ -1,3 +1,4 @@
+# bot/core/database.py
 from motor.motor_asyncio import AsyncIOMotorClient
 from bot import Var
 
@@ -5,45 +6,46 @@ class MongoDB:
     def __init__(self, uri, database_name):
         self.client = AsyncIOMotorClient(uri)
         self.db = self.client[database_name]
-        self.animes = self.db.animes[Var.BOT_TOKEN.split(":")[0]]
+        self.animes = self.db.animes[Var.BOT_TOKEN.split(':')[0]]
 
     async def getAnime(self, ani_id):
         """Get anime document by ani_id"""
-        doc = await self.animes.find_one({"_id": ani_id})
-        return doc or {}
+        anime_doc = await self.animes.find_one({'_id': ani_id})
+        return anime_doc or {}
 
     async def saveAnime(self, ani_id, ep_no, qual, post_id=None):
-        """Mark a quality as uploaded for an episode and save post_id"""
-        ani_doc = await self.getAnime(ani_id)
-        ep_no_str = str(ep_no)
+        """Mark a quality as uploaded for an episode, and save post_id"""
+        anime_doc = await self.getAnime(ani_id)
+        episodes = anime_doc.get("episodes", {})
 
-        # Ensure episode exists
-        episodes = ani_doc.get("episodes", {})
-        if ep_no_str not in episodes:
-            episodes[ep_no_str] = {q: False for q in Var.QUALS}
+        # update episode info
+        ep_info = episodes.get(str(ep_no), {q: False for q in Var.QUALS})
+        ep_info[qual] = True
 
-        # Mark quality as uploaded
-        episodes[ep_no_str][qual] = True
-
-        update_data = {"episodes": episodes}
+        # save post_id if not already set
         if post_id:
-            update_data["episodes"][ep_no_str]["post_id"] = post_id
+            ep_info["post_id"] = post_id
 
-        await self.animes.update_one({"_id": ani_id}, {"$set": update_data}, upsert=True)
+        episodes[str(ep_no)] = ep_info
+
+        await self.animes.update_one(
+            {'_id': ani_id},
+            {'$set': {"episodes": episodes}},
+            upsert=True
+        )
 
     async def getEpisodePost(self, ani_id, ep_no):
         """Return Telegram post_id for a given anime episode"""
-        ani_doc = await self.getAnime(ani_id)
-        ep_no_str = str(ep_no)
-        episodes = ani_doc.get("episodes", {})
-        return episodes.get(ep_no_str, {}).get("post_id")
+        anime_doc = await self.getAnime(ani_id)
+        episodes = anime_doc.get("episodes", {})
+        ep_info = episodes.get(str(ep_no), {})
+        return ep_info.get("post_id")
 
     async def saveEpisodePost(self, ani_id, ep_no, post_id):
-        """Save post_id for a specific episode"""
-        ep_no_str = str(ep_no)
+        """Save post_id specifically under episodes dict"""
         await self.animes.update_one(
-            {"_id": ani_id},
-            {"$set": {f"episodes.{ep_no_str}.post_id": post_id}},
+            {'_id': ani_id},
+            {'$set': {f"episodes.{ep_no}.post_id": post_id}},
             upsert=True
         )
 
