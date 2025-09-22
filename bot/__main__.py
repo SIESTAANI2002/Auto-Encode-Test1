@@ -11,6 +11,7 @@ from bot.core.auto_animes import fetch_animes
 from bot.core.func_utils import clean_up, new_task, editMessage
 from bot.modules.up_posts import upcoming_animes
 
+# ------------------ Restart command ------------------
 @bot.on_message(command('restart') & user(Var.ADMINS))
 @new_task
 async def restart(client, message):
@@ -39,7 +40,8 @@ async def restart():
             await bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text="<i>Restarted !</i>")
         except Exception as e:
             LOGS.error(e)
-            
+
+# ------------------ Queue loop ------------------
 async def queue_loop():
     LOGS.info("Queue Loop Started !!")
     while True:
@@ -52,6 +54,7 @@ async def queue_loop():
                 ffQueue.task_done()
         await asleep(10)
 
+# ------------------ Main ------------------
 async def main():
     sch.add_job(upcoming_animes, "cron", hour=0, minute=30)
     await bot.start()
@@ -67,6 +70,13 @@ async def main():
         task.cancel()
     await clean_up()
     LOGS.info('Finished AutoCleanUp !!')
-    
+
 if __name__ == '__main__':
+    import threading
+    from web import run_web
+
+    # Start the web server in a background thread (for Koyeb health check)
+    threading.Thread(target=run_web, daemon=True).start()
+
+    # Start the bot loop
     bot_loop.run_until_complete(main())
