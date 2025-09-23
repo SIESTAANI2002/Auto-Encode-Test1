@@ -10,6 +10,7 @@ from pyrogram import filters
 from bot import bot, Var, LOGS
 from bot.core.ffencoder import FFEncoder
 from bot.core import gdrive_uploader  # Google Drive uploader
+from bot.modules.func_utils import convertBytes  # Ensure this exists
 
 # -------------------- Queue & Lock -------------------- #
 ffQueue = Queue()
@@ -18,16 +19,23 @@ ff_queued = {}
 runner_task = None
 
 # -------------------- Minimal Progress Bar -------------------- #
-def simple_progress_bar(percent: float) -> str:
-    return f"{percent:.0f}% | 100%"
+def visual_bar(percent: float, length=12) -> str:
+    filled = int(length * percent / 100)
+    empty = length - filled
+    return f"[{'█'*filled}{'▒'*empty}] {percent:.0f}% | 100%"
 
-async def update_progress(msg, file_name, percent, start_time):
+async def update_progress(msg, file_name, percent, start_time, ensize=0):
     elapsed = time.time() - start_time
+    speed = ensize / max(elapsed, 1)
     eta = (elapsed / max(percent, 0.01)) * (100 - percent)
     mins, secs = divmod(int(eta), 60)
+    el_m, el_s = divmod(int(elapsed), 60)
+
     progress_text = f"⏳ **Encoding {file_name}**\n" \
-                    f"**{simple_progress_bar(percent)}**\n" \
-                    f"**ETA:** {mins}m {secs}s"
+                    f"{visual_bar(percent)}\n" \
+                    f"**Speed:** {convertBytes(speed)}/s\n" \
+                    f"**ETA:** {mins}m {secs}s\n" \
+                    f"**Elapsed:** {el_m}m {el_s}s"
     await msg.edit(progress_text)
 
 # -------------------- Queue Runner -------------------- #
@@ -62,13 +70,15 @@ async def queue_runner(client):
                         text = await f.read()
                         if text:
                             t = [int(x) for x in findall(r"out_time_ms=(\d+)", text)]
+                            ens = [int(x) for x in findall(r"total_size=(\d+)", text)]
                             time_done = t[-1] / 1000000 if t else 0
+                            ensize = ens[-1] if ens else 0
                             total = encoder._FFEncoder__total_time or 1
                             percent = min((time_done / total) * 100, 100)
 
                             now = time.time()
                             if now - last_update >= 10:  # update every 10 sec
-                                await update_progress(msg, filename, percent, start_time)
+                                await update_progress(msg, filename, percent, start_time, ensize)
                                 last_update = now
                 except Exception as e:
                     LOGS.error(f"Progress read error: {str(e)}")
