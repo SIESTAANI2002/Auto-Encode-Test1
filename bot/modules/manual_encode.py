@@ -5,6 +5,8 @@ from asyncio import Queue, Lock, create_task
 from os import remove, path as ospath
 import aiofiles
 from re import findall
+import psutil
+import datetime
 
 from pyrogram import filters
 from bot import bot, Var, LOGS
@@ -32,13 +34,21 @@ async def update_progress(msg, file_name, percent, start_time, ensize=0, total_s
     mins_eta, secs_eta = divmod(int(eta), 60)
     el_m, el_s = divmod(int(elapsed), 60)
 
+    # --- System Stats ---
+    cpu = psutil.cpu_percent(interval=None)
+    ram = psutil.virtual_memory().percent
+    free = psutil.disk_usage('/').free / (1024**3)  # GB
+    uptime_seconds = time.time() - psutil.boot_time()
+    uptime_str = str(datetime.timedelta(seconds=int(uptime_seconds)))
+
     progress_text = f"""<blockquote>‣ <b>Anime Name :</b> <b><i>{file_name}</i></b></blockquote>
 <blockquote>‣ <b>Status :</b> <i>{status}</i>
     {bar}</blockquote>
 <blockquote>   ‣ <b>Size :</b> {convertBytes(ensize)} out of ~ {convertBytes(total_size)}
     ‣ <b>Speed :</b> {convertBytes(speed)}/s
     ‣ <b>Time Took :</b> {el_m}m {el_s}s
-    ‣ <b>Time Left :</b> {mins_eta}m {secs_eta}s</blockquote>"""
+    ‣ <b>Time Left :</b> {mins_eta}m {secs_eta}s</blockquote>
+<blockquote>‣ <b>System Stats:</b> CPU: {cpu}% | RAM: {ram}% | FREE: {free:.2f}GB | UPTIME: {uptime_str}</blockquote>"""
     await msg.edit(progress_text)
 
 # -------------------- Download Helper -------------------- #
@@ -242,7 +252,4 @@ async def cancel_encode(client, message):
     for e in temp_queue:
         await ffQueue.put(e)
 
-    if removed:
-        await message.reply_text(f"🗑️ **{filename} removed from queue.**")
-    else:
-        await message.reply_text(f"❌ **File {filename} not found in queue.**")
+    if
