@@ -4,7 +4,7 @@ from asyncio import Queue
 from bot import Var, LOGS
 from bot.core.ffencoder import FFEncoder
 from bot.core.func_utils import sendMessage, editMessage
-from bot.core.uploader import upload_to_gdrive
+from bot.core import gdrive_uploader
 
 # manual encoding queue (to avoid parallel encode crashes)
 manual_queue = Queue()
