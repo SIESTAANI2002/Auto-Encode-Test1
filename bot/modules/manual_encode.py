@@ -1,25 +1,19 @@
-from bot import bot, Var, LOGS
-from pyrogram import filters
-from asyncio import Queue, Lock, create_task, gather, sleep
-from os import remove, path as ospath
 import os
+import asyncio
+from asyncio import Queue, Lock, create_task
+from os import remove, path as ospath
 from re import findall
 
+from pyrogram import filters
+from bot import bot, Var, LOGS
 from bot.core.ffencoder import FFEncoder
-from bot.core import gdrive_uploader
-from bot.core.func_utils import editMessage
+from bot.core import gdrive_uploader  # your gdrive uploader
 
 # -------------------- Queue & Lock -------------------- #
 ffQueue = Queue()        # waiting tasks
 ffLock = Lock()          # ensures only one runner at a time
 ff_queued = {}           # currently running tasks {filename: encoder_instance}
 runner_task = None       # reference to the queue runner task
-
-# -------------------- Helper: Simple Bar -------------------- #
-def simple_bar(percent: float, length: int = 12) -> str:
-    filled = int(length * percent / 100)
-    empty = length - filled
-    return "[" + "█"*filled + "▒"*empty + f"] {percent:.2f}%"
 
 # -------------------- Queue Runner -------------------- #
 async def queue_runner(client):
@@ -33,26 +27,24 @@ async def queue_runner(client):
         try:
             # Download
             await msg.edit(f"⬇️ Downloading {filename}...")
-            await encoder.dl_message.download(encoder.dl_path)
-            await msg.edit(f"⬇️ Download completed. Starting {encoder._FFEncoder__qual}p encoding...")
+            await encoder.message.download(encoder.dl_path)
+            await msg.edit(f"⬇️ Download completed. Starting 720p encoding...")
 
-            # Start progress in background
+            # Start FFEncoder progress in background
             progress_task = create_task(encoder.progress())
+            await asyncio.sleep(1)  # let FFmpeg create prog.txt
 
-            # small sleep to ensure prog.txt exists
-            await sleep(1)
-
-            # Encode
+            # Start encoding
             output_path = await encoder.start_encode()
 
-            # Cancel progress task
+            # Stop progress task
             progress_task.cancel()
 
             # Upload to Telegram
             await client.send_document(
                 chat_id=Var.MAIN_CHANNEL,
                 document=output_path,
-                caption=f"✅ Encoded {encoder._FFEncoder__qual}p: {filename}"
+                caption=f"✅ Encoded 720p: {filename}"
             )
 
             # Upload to Google Drive
@@ -63,7 +55,7 @@ async def queue_runner(client):
 
             await msg.edit(f"✅ Encoding and upload finished: {filename}")
 
-            # Auto-delete
+            # Auto-delete if enabled
             if Var.AUTO_DEL:
                 for f in [encoder.dl_path, output_path]:
                     if ospath.exists(f):
@@ -88,24 +80,27 @@ async def manual_encode(client, message):
 
     msg = await message.reply_text(f"⏳ Queued: {file_name}")
 
+    # FFEncoder: original message for download, bot reply for progress
     encoder = FFEncoder(message, download_path, file_name, "720")
-    encoder.msg = msg
-    encoder.dl_message = message  # original message
+    encoder.msg = msg  # bot reply
 
     await ffQueue.put(encoder)
     LOGS.info(f"Added {file_name} to queue")
 
+    # Start runner only if not already running
     if runner_task is None or runner_task.done():
         runner_task = create_task(queue_runner(client))
 
-# -------------------- Queue Status -------------------- #
+# -------------------- Queue Status Command -------------------- #
 @bot.on_message(filters.command("queue"))
 async def queue_status(client, message):
     status_lines = []
 
+    # Currently running task
     for fname, encoder in ff_queued.items():
         status_lines.append(f"▶️ Encoding: {fname}")
 
+    # Waiting tasks
     if not ffQueue.empty():
         for encoder in list(ffQueue._queue):
             filename = os.path.basename(encoder.dl_path)
@@ -116,7 +111,7 @@ async def queue_status(client, message):
     else:
         await message.reply_text("\n".join(status_lines))
 
-# -------------------- Cancel -------------------- #
+# -------------------- Cancel Command -------------------- #
 @bot.on_message(filters.command("cancel"))
 async def cancel_encode(client, message):
     try:
@@ -127,7 +122,7 @@ async def cancel_encode(client, message):
 
     removed = False
 
-    # Currently encoding
+    # Check currently encoding
     if filename in ff_queued:
         encoder = ff_queued[filename]
         encoder.is_cancelled = True
@@ -135,7 +130,7 @@ async def cancel_encode(client, message):
         await message.reply_text(f"🛑 Cancel request sent for {filename}")
         return
 
-    # Waiting queue
+    # Check waiting queue
     temp_queue = []
     while not ffQueue.empty():
         encoder = await ffQueue.get()
