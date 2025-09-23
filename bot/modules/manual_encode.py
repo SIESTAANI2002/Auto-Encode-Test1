@@ -3,6 +3,8 @@ import time
 import asyncio
 from asyncio import Queue, Lock, create_task
 from os import remove, path as ospath
+import aiofiles
+from re import findall
 
 from pyrogram import filters
 from bot import bot, Var, LOGS
@@ -43,26 +45,28 @@ async def queue_runner(client):
             await encoder.message.download(encoder.dl_path)
             await msg.edit(f"⬇️ Download completed. Starting 720p encoding...")
 
-            start_time = time.time()
-
             # Start FFEncoder
             encode_task = create_task(encoder.start_encode())
 
+            # Wait for prog.txt to appear
+            while not ospath.exists(encoder._FFEncoder__prog_file):
+                await asyncio.sleep(1)
+
+            start_time = time.time()
+
             # Minimal progress loop
             while not encode_task.done():
-                if ospath.exists(encoder._FFEncoder__prog_file):
-                    try:
-                        async with aiofiles.open(encoder._FFEncoder__prog_file, "r") as f:
-                            text = await f.read()
-                            if text:
-                                # Get time done in seconds
-                                t = [int(x) for x in findall(r"out_time_ms=(\d+)", text)]
-                                time_done = t[-1] / 1000000 if t else 0
-                                total = encoder._FFEncoder__total_time or 1
-                                percent = min((time_done / total) * 100, 100)
-                                await update_progress(msg, filename, percent, start_time)
-                    except Exception as e:
-                        LOGS.error(f"Progress read error: {str(e)}")
+                try:
+                    async with aiofiles.open(encoder._FFEncoder__prog_file, "r") as f:
+                        text = await f.read()
+                        if text:
+                            t = [int(x) for x in findall(r"out_time_ms=(\d+)", text)]
+                            time_done = t[-1] / 1000000 if t else 0
+                            total = encoder._FFEncoder__total_time or 1
+                            percent = min((time_done / total) * 100, 100)
+                            await update_progress(msg, filename, percent, start_time)
+                except Exception as e:
+                    LOGS.error(f"Progress read error: {str(e)}")
                 await asyncio.sleep(2)
 
             output_path = await encode_task
