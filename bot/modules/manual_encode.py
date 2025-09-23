@@ -25,9 +25,9 @@ async def update_progress(msg, file_name, percent, start_time):
     elapsed = time.time() - start_time
     eta = (elapsed / max(percent, 0.01)) * (100 - percent)
     mins, secs = divmod(int(eta), 60)
-    progress_text = f"⏳ Encoding {file_name}...\n" \
-                    f"{simple_progress_bar(percent)}\n" \
-                    f"ETA: {mins}m {secs}s"
+    progress_text = f"⏳ **Encoding {file_name}**\n" \
+                    f"**{simple_progress_bar(percent)}**\n" \
+                    f"**ETA:** {mins}m {secs}s"
     await msg.edit(progress_text)
 
 # -------------------- Queue Runner -------------------- #
@@ -41,9 +41,9 @@ async def queue_runner(client):
 
         try:
             # Download
-            await msg.edit(f"⏳ Downloading {filename}...")
+            await msg.edit(f"⏳ **Downloading {filename}...**")
             await encoder.message.download(encoder.dl_path)
-            await msg.edit(f"⬇️ Download completed. Starting 720p encoding...")
+            await msg.edit(f"⬇️ **Download completed. Starting 720p encoding...**")
 
             # Start FFEncoder
             encode_task = create_task(encoder.start_encode())
@@ -53,8 +53,9 @@ async def queue_runner(client):
                 await asyncio.sleep(1)
 
             start_time = time.time()
+            last_update = 0
 
-            # Minimal progress loop
+            # Minimal progress loop with 10-second updates
             while not encode_task.done():
                 try:
                     async with aiofiles.open(encoder._FFEncoder__prog_file, "r") as f:
@@ -64,10 +65,14 @@ async def queue_runner(client):
                             time_done = t[-1] / 1000000 if t else 0
                             total = encoder._FFEncoder__total_time or 1
                             percent = min((time_done / total) * 100, 100)
-                            await update_progress(msg, filename, percent, start_time)
+
+                            now = time.time()
+                            if now - last_update >= 10:  # update every 10 sec
+                                await update_progress(msg, filename, percent, start_time)
+                                last_update = now
                 except Exception as e:
                     LOGS.error(f"Progress read error: {str(e)}")
-                await asyncio.sleep(2)
+                await asyncio.sleep(1)
 
             output_path = await encode_task
 
@@ -75,7 +80,7 @@ async def queue_runner(client):
             await client.send_document(
                 chat_id=Var.MAIN_CHANNEL,
                 document=output_path or encoder.dl_path,
-                caption=f"✅ Encoded 720p: {filename}"
+                caption=f"✅ **Encoded 720p: {filename}**"
             )
 
             # Upload to Google Drive
@@ -84,7 +89,7 @@ async def queue_runner(client):
             except Exception as e:
                 LOGS.error(f"GDrive upload failed for {filename}: {str(e)}")
 
-            await msg.edit(f"✅ Encoding and upload finished: {filename}")
+            await msg.edit(f"✅ **Encoding and upload finished: {filename}**")
 
             # Auto-delete if enabled
             if Var.AUTO_DEL:
@@ -94,7 +99,7 @@ async def queue_runner(client):
 
         except Exception as e:
             LOGS.error(f"Queue task failed: {filename} | {str(e)}")
-            await msg.edit(f"❌ Task failed: {filename}")
+            await msg.edit(f"❌ **Task failed: {filename}**")
 
         finally:
             ff_queued.pop(filename, None)
@@ -109,7 +114,7 @@ async def manual_encode(client, message):
     file_name = message.document.file_name if message.document else message.video.file_name
     download_path = f"downloads/{file_name}"
 
-    msg = await message.reply_text(f"⏳ Queued: {file_name}")
+    msg = await message.reply_text(f"⏳ **Queued: {file_name}**")
 
     encoder = FFEncoder(message, download_path, file_name, "720")
     encoder.msg = msg
@@ -126,15 +131,15 @@ async def queue_status(client, message):
     status_lines = []
 
     for fname in ff_queued.keys():
-        status_lines.append(f"▶️ Encoding: {fname}")
+        status_lines.append(f"▶️ **Encoding: {fname}**")
 
     if not ffQueue.empty():
         for encoder in list(ffQueue._queue):
             filename = os.path.basename(encoder.dl_path)
-            status_lines.append(f"⏳ Waiting: {filename}")
+            status_lines.append(f"⏳ **Waiting: {filename}**")
 
     if not status_lines:
-        await message.reply_text("📭 No files are currently queued.")
+        await message.reply_text("📭 **No files are currently queued.**")
     else:
         await message.reply_text("\n".join(status_lines))
 
@@ -144,7 +149,7 @@ async def cancel_encode(client, message):
     try:
         filename = message.text.split(maxsplit=1)[1]
     except IndexError:
-        await message.reply_text("⚠️ Usage: /cancel <filename>")
+        await message.reply_text("⚠️ **Usage: /cancel <filename>**")
         return
 
     removed = False
@@ -153,7 +158,7 @@ async def cancel_encode(client, message):
         encoder = ff_queued[filename]
         encoder.is_cancelled = True
         removed = True
-        await message.reply_text(f"🛑 Cancel request sent for {filename}")
+        await message.reply_text(f"🛑 **Cancel request sent for {filename}**")
         return
 
     temp_queue = []
@@ -171,6 +176,6 @@ async def cancel_encode(client, message):
         await ffQueue.put(e)
 
     if removed:
-        await message.reply_text(f"🗑️ {filename} removed from queue.")
+        await message.reply_text(f"🗑️ **{filename} removed from queue.**")
     else:
-        await message.reply_text(f"❌ File {filename} not found in queue.")
+        await message.reply_text(f"❌ **File {filename} not found in queue.**")
