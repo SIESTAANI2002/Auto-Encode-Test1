@@ -10,10 +10,10 @@ from bot.core.ffencoder import FFEncoder
 from bot.core import gdrive_uploader  # Google Drive uploader
 
 # -------------------- Queue & Lock -------------------- #
-ffQueue = Queue()        # waiting tasks
-ffLock = Lock()          # ensures only one runner at a time
-ff_queued = {}           # currently running tasks {filename: encoder_instance}
-runner_task = None       # reference to the queue runner task
+ffQueue = Queue()
+ffLock = Lock()
+ff_queued = {}
+runner_task = None
 
 # -------------------- Minimal Progress Bar -------------------- #
 def simple_progress_bar(percent: float) -> str:
@@ -43,24 +43,40 @@ async def queue_runner(client):
             await encoder.message.download(encoder.dl_path)
             await msg.edit(f"⬇️ Download completed. Starting 720p encoding...")
 
-            # Start minimal progress simulation
             start_time = time.time()
-            total_steps = 20
-            for i in range(total_steps + 1):
-                percent = (i / total_steps) * 100
-                await update_progress(msg, filename, percent, start_time)
-                await asyncio.sleep(1)  # simulate encoding work
+
+            # Start FFEncoder
+            encode_task = create_task(encoder.start_encode())
+
+            # Minimal progress loop
+            while not encode_task.done():
+                if ospath.exists(encoder._FFEncoder__prog_file):
+                    try:
+                        async with aiofiles.open(encoder._FFEncoder__prog_file, "r") as f:
+                            text = await f.read()
+                            if text:
+                                # Get time done in seconds
+                                t = [int(x) for x in findall(r"out_time_ms=(\d+)", text)]
+                                time_done = t[-1] / 1000000 if t else 0
+                                total = encoder._FFEncoder__total_time or 1
+                                percent = min((time_done / total) * 100, 100)
+                                await update_progress(msg, filename, percent, start_time)
+                    except Exception as e:
+                        LOGS.error(f"Progress read error: {str(e)}")
+                await asyncio.sleep(2)
+
+            output_path = await encode_task
 
             # Upload to Telegram
             await client.send_document(
                 chat_id=Var.MAIN_CHANNEL,
-                document=encoder.dl_path,
+                document=output_path or encoder.dl_path,
                 caption=f"✅ Encoded 720p: {filename}"
             )
 
             # Upload to Google Drive
             try:
-                await gdrive_uploader.upload_to_drive(encoder.dl_path)
+                await gdrive_uploader.upload_to_drive(output_path or encoder.dl_path)
             except Exception as e:
                 LOGS.error(f"GDrive upload failed for {filename}: {str(e)}")
 
@@ -68,8 +84,9 @@ async def queue_runner(client):
 
             # Auto-delete if enabled
             if Var.AUTO_DEL:
-                if ospath.exists(encoder.dl_path):
-                    remove(encoder.dl_path)
+                for f in [encoder.dl_path, output_path]:
+                    if f and ospath.exists(f):
+                        remove(f)
 
         except Exception as e:
             LOGS.error(f"Queue task failed: {filename} | {str(e)}")
