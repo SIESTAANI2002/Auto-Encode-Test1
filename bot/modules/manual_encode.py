@@ -19,7 +19,7 @@ ff_queued = {}
 runner_task = None
 
 # -------------------- FF-style Progress -------------------- #
-async def update_progress(msg, file_name, percent, start_time, ensize=0, total_size=0):
+async def update_progress(msg, file_name, percent, start_time, ensize=0, total_size=0, status="Processing"):
     elapsed = time.time() - start_time
     speed = ensize / max(elapsed, 1)
     eta = (total_size - ensize) / max(speed, 0.01)
@@ -33,7 +33,7 @@ async def update_progress(msg, file_name, percent, start_time, ensize=0, total_s
     el_m, el_s = divmod(int(elapsed), 60)
 
     progress_text = f"""<blockquote>‣ <b>Anime Name :</b> <b><i>{file_name}</i></b></blockquote>
-<blockquote>‣ <b>Status :</b> <i>Processing</i>
+<blockquote>‣ <b>Status :</b> <i>{status}</i>
     {bar}</blockquote>
 <blockquote>   ‣ <b>Size :</b> {convertBytes(ensize)} out of ~ {convertBytes(total_size)}
     ‣ <b>Speed :</b> {convertBytes(speed)}/s
@@ -57,7 +57,8 @@ async def download_file(message, path, msg):
                 percent,
                 start_time,
                 current,
-                total
+                total,
+                status="Downloading"
             )
             last_update = now
 
@@ -65,6 +66,35 @@ async def download_file(message, path, msg):
         await message.download(file_name=path, progress=progress)
     else:
         await message.download(file_name=path, progress=progress)
+
+# -------------------- Upload Helper -------------------- #
+async def upload_file(client, chat_id, path, msg, caption):
+    start_time = time.time()
+    last_update = 0
+    total = ospath.getsize(path)
+
+    async def progress(current, total_size):
+        nonlocal last_update
+        percent = (current / total_size) * 100
+        now = time.time()
+        if now - last_update >= 10:
+            await update_progress(
+                msg,
+                os.path.basename(path),
+                percent,
+                start_time,
+                current,
+                total_size,
+                status="Uploading"
+            )
+            last_update = now
+
+    await client.send_document(
+        chat_id=chat_id,
+        document=path,
+        caption=caption,
+        progress=progress
+    )
 
 # -------------------- Queue Runner -------------------- #
 async def queue_runner(client):
@@ -99,12 +129,12 @@ async def queue_runner(client):
                             s = [int(x) for x in findall(r"total_size=(\d+)", text)]
                             time_done = t[-1]/1000000 if t else 0
                             ensize = s[-1] if s else 0
-                            total_size = ensize / max((time_done/100*100), 0.01) if time_done > 0 else 1
+                            total_size = ensize * (encoder._FFEncoder__total_time / max(time_done, 1))
                             percent = min((time_done/encoder._FFEncoder__total_time)*100, 100)
 
                             now = time.time()
                             if now - last_update >= 10:
-                                await update_progress(msg, filename, percent, start_time, ensize, total_size)
+                                await update_progress(msg, filename, percent, start_time, ensize, total_size, status="Encoding")
                                 last_update = now
                 except Exception as e:
                     LOGS.error(f"Progress read error: {str(e)}")
@@ -113,10 +143,12 @@ async def queue_runner(client):
             output_path = await encode_task
 
             # -------------------- Upload -------------------- #
-            await client.send_document(
-                chat_id=Var.MAIN_CHANNEL,
-                document=output_path or encoder.dl_path,
-                caption=f"✅ **Encoded 720p: {filename}**"
+            await upload_file(
+                client,
+                Var.MAIN_CHANNEL,
+                output_path or encoder.dl_path,
+                msg,
+                f"✅ **Encoded 720p: {filename}**"
             )
 
             try:
