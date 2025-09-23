@@ -10,7 +10,7 @@ from pyrogram import filters
 from bot import bot, Var, LOGS
 from bot.core.ffencoder import FFEncoder
 from bot.core import gdrive_uploader
-from bot.modules.func_utils import convertBytes  # ensure exists
+from bot.core.func_utils import convertBytes  # ensure exists
 
 # -------------------- Queue & Lock -------------------- #
 ffQueue = Queue()
