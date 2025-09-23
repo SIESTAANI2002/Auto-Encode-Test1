@@ -44,11 +44,22 @@ async def update_progress(msg, file_name, percent, start_time, ensize=0, total_s
 # -------------------- Download Helper -------------------- #
 async def download_file(message, path, msg):
     start_time = time.time()
+    last_update = 0
 
     async def progress(current, total):
+        nonlocal last_update
         percent = (current / total) * 100
-        await update_progress(msg, message.document.file_name if message.document else message.video.file_name,
-                              percent, start_time, current, total)
+        now = time.time()
+        if now - last_update >= 10:  # update every 10s
+            await update_progress(
+                msg,
+                message.document.file_name if message.document else message.video.file_name,
+                percent,
+                start_time,
+                current,
+                total
+            )
+            last_update = now
 
     if message.document:
         await message.download(file_name=path, progress=progress)
