@@ -6,10 +6,10 @@ from bot.core import gdrive_uploader
 from os import remove, path as ospath
 import os
 from re import findall
+import time
 
 # -------------------- Helper Functions -------------------- #
 def convertBytes(size: int) -> str:
-    """Convert bytes to human-readable string."""
     for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
         if size < 1024:
             return f"{size:.2f}{unit}"
@@ -17,7 +17,6 @@ def convertBytes(size: int) -> str:
     return f"{size:.2f}PB"
 
 def convertTime(seconds: float) -> str:
-    """Convert seconds to hh:mm:ss format."""
     seconds = int(seconds)
     h, m = divmod(seconds, 3600)
     m, s = divmod(m, 60)
@@ -61,7 +60,7 @@ async def queue_runner(client):
                             text = f.read()
                             if (t := findall(r"out_time_ms=(\d+)", text)):
                                 time_done = int(t[-1]) / 1000000
-                                total_time = encoder._FFEncoder__total_time or 1
+                                total_time = getattr(encoder, "_FFEncoder__total_time", 1)
                                 percent = min(round(time_done / total_time * 100, 2), 100)
 
                                 # Progress bar
@@ -69,30 +68,26 @@ async def queue_runner(client):
                                 filled = int(percent / 100 * total_blocks)
                                 bar = "█" * filled + "-" * (total_blocks - filled)
 
-                                # Size / Speed / ETA
-                                ensize = ospath.getsize(encoder.dl_path) if ospath.exists(encoder.dl_path) else 0
-                                tsize = encoder._FFEncoder__total_size or ensize
-                                speed = ensize / max(time_done, 1)
-                                diff = time_done
-                                eta = (tsize - ensize) / max(speed, 1)
+                                # ETA
+                                speed = time_done and time_done and 1 or 1
+                                eta = max(total_time - time_done, 0)
 
-                                # HTML progress string
                                 progress_str = f"""<blockquote>‣ <b>Anime Name :</b> <b><i>{encoder.__name}</i></b></blockquote>
 <blockquote>‣ <b>Status :</b> <i>Encoding</i>
     <code>[{bar}]</code> {percent}%</blockquote> 
-<blockquote>   ‣ <b>Size :</b> {convertBytes(ensize)} out of ~ {convertBytes(tsize)}
-    ‣ <b>Speed :</b> {convertBytes(speed)}/s
-    ‣ <b>Time Took :</b> {convertTime(diff)}
-    ‣ <b>Time Left :</b> {convertTime(eta)}</blockquote>
-<blockquote>‣ <b>File(s) Encoded:</b> <code>{Var.QUALS.index(encoder.__qual)} / {len(Var.QUALS)}</code></blockquote>"""
+<blockquote>   ‣ <b>Time Took :</b> {convertTime(time_done)}
+    ‣ <b>Time Left :</b> {convertTime(eta)}</blockquote>"""
 
-                                # Update Telegram every 5% change
-                                if percent - last_percent >= 5:
+                                if percent - last_percent >= 1:
                                     await msg.edit(progress_str, parse_mode="html")
                                     last_percent = percent
 
                     except Exception as e:
                         LOGS.error(f"Progress read error: {str(e)}")
+                else:
+                    # fallback if progress file missing
+                    dots = (int(time.time()) % 4) * "."
+                    await msg.edit(f"⏳ Encoding {filename}{dots}")
 
                 await sleep(1)
 
@@ -129,7 +124,7 @@ async def queue_runner(client):
 
     runner_task = None
 
-# -------------------- Manual Encode Handler -------------------- #
+# -------------------- Manual Encode -------------------- #
 @bot.on_message(filters.document | filters.video)
 async def manual_encode(client, message):
     file_name = message.document.file_name if message.document else message.video.file_name
@@ -147,16 +142,14 @@ async def manual_encode(client, message):
     if runner_task is None or runner_task.done():
         runner_task = create_task(queue_runner(client))
 
-# -------------------- Queue Status Command -------------------- #
+# -------------------- Queue Status -------------------- #
 @bot.on_message(filters.command("queue"))
 async def queue_status(client, message):
     status_lines = []
 
-    # Currently running
     for fname, encoder in ff_queued.items():
         status_lines.append(f"▶️ Encoding: {fname}")
 
-    # Waiting queue
     if not ffQueue.empty():
         for encoder in list(ffQueue._queue):
             filename = os.path.basename(encoder.dl_path)
@@ -178,7 +171,6 @@ async def cancel_encode(client, message):
 
     removed = False
 
-    # Check currently encoding
     if filename in ff_queued:
         encoder = ff_queued[filename]
         encoder.is_cancelled = True
@@ -186,7 +178,6 @@ async def cancel_encode(client, message):
         await message.reply_text(f"🛑 Cancel request sent for {filename}")
         return
 
-    # Check waiting queue
     temp_queue = []
     while not ffQueue.empty():
         encoder = await ffQueue.get()
