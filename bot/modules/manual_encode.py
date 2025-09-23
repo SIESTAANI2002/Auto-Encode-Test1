@@ -9,8 +9,8 @@ from re import findall
 from pyrogram import filters
 from bot import bot, Var, LOGS
 from bot.core.ffencoder import FFEncoder
-from bot.core import gdrive_uploader  # Google Drive uploader
-from bot.core.func_utils import convertBytes  # Ensure this exists
+from bot.core import gdrive_uploader
+from bot.modules.func_utils import convertBytes  # ensure exists
 
 # -------------------- Queue & Lock -------------------- #
 ffQueue = Queue()
@@ -18,24 +18,27 @@ ffLock = Lock()
 ff_queued = {}
 runner_task = None
 
-# -------------------- Minimal Progress Bar -------------------- #
-def visual_bar(percent: float, length=12) -> str:
-    filled = int(length * percent / 100)
-    empty = length - filled
-    return f"[{'█'*filled}{'▒'*empty}] {percent:.0f}% | 100%"
-
-async def update_progress(msg, file_name, percent, start_time, ensize=0):
+# -------------------- FFEncoder-style Progress -------------------- #
+async def update_progress(msg, file_name, percent, start_time, ensize=0, total_size=0):
     elapsed = time.time() - start_time
     speed = ensize / max(elapsed, 1)
-    eta = (elapsed / max(percent, 0.01)) * (100 - percent)
-    mins, secs = divmod(int(eta), 60)
+    eta = (total_size - ensize) / max(speed, 0.01)
+
+    bar_len = 12
+    filled = int(bar_len * percent / 100)
+    empty = bar_len - filled
+    bar = f"[{'█'*filled}{'▒'*empty}] {percent:.2f}%"
+
+    mins_eta, secs_eta = divmod(int(eta), 60)
     el_m, el_s = divmod(int(elapsed), 60)
 
-    progress_text = f"⏳ **Encoding {file_name}**\n" \
-                    f"{visual_bar(percent)}\n" \
-                    f"**Speed:** {convertBytes(speed)}/s\n" \
-                    f"**ETA:** {mins}m {secs}s\n" \
-                    f"**Elapsed:** {el_m}m {el_s}s"
+    progress_text = f"""<blockquote>‣ <b>Anime Name :</b> <b><i>{file_name}</i></b></blockquote>
+<blockquote>‣ <b>Status :</b> <i>Encoding</i>
+    {bar}</blockquote>
+<blockquote>   ‣ <b>Size :</b> {convertBytes(ensize)} out of ~ {convertBytes(total_size)}
+    ‣ <b>Speed :</b> {convertBytes(speed)}/s
+    ‣ <b>Time Took :</b> {el_m}m {el_s}s
+    ‣ <b>Time Left :</b> {mins_eta}m {secs_eta}s</blockquote>"""
     await msg.edit(progress_text)
 
 # -------------------- Queue Runner -------------------- #
@@ -63,22 +66,22 @@ async def queue_runner(client):
             start_time = time.time()
             last_update = 0
 
-            # Minimal progress loop with 10-second updates
+            # Progress loop, update every 10 seconds
             while not encode_task.done():
                 try:
                     async with aiofiles.open(encoder._FFEncoder__prog_file, "r") as f:
                         text = await f.read()
                         if text:
                             t = [int(x) for x in findall(r"out_time_ms=(\d+)", text)]
-                            ens = [int(x) for x in findall(r"total_size=(\d+)", text)]
-                            time_done = t[-1] / 1000000 if t else 0
-                            ensize = ens[-1] if ens else 0
-                            total = encoder._FFEncoder__total_time or 1
-                            percent = min((time_done / total) * 100, 100)
+                            s = [int(x) for x in findall(r"total_size=(\d+)", text)]
+                            time_done = t[-1]/1000000 if t else 0
+                            ensize = s[-1] if s else 0
+                            total_size = ensize / max((time_done/100*100), 0.01) if time_done > 0 else 1
+                            percent = min((time_done/encoder._FFEncoder__total_time)*100, 100)
 
                             now = time.time()
                             if now - last_update >= 10:  # update every 10 sec
-                                await update_progress(msg, filename, percent, start_time, ensize)
+                                await update_progress(msg, filename, percent, start_time, ensize, total_size)
                                 last_update = now
                 except Exception as e:
                     LOGS.error(f"Progress read error: {str(e)}")
