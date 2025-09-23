@@ -10,7 +10,7 @@ from pyrogram import filters
 from bot import bot, Var, LOGS
 from bot.core.ffencoder import FFEncoder
 from bot.core import gdrive_uploader
-from bot.core.func_utils import convertBytes  # ensure exists
+from bot.modules.func_utils import convertBytes  # ensure exists
 
 # -------------------- Queue & Lock -------------------- #
 ffQueue = Queue()
@@ -18,7 +18,7 @@ ffLock = Lock()
 ff_queued = {}
 runner_task = None
 
-# -------------------- FFEncoder-style Progress -------------------- #
+# -------------------- FF-style Progress -------------------- #
 async def update_progress(msg, file_name, percent, start_time, ensize=0, total_size=0):
     elapsed = time.time() - start_time
     speed = ensize / max(elapsed, 1)
@@ -33,13 +33,27 @@ async def update_progress(msg, file_name, percent, start_time, ensize=0, total_s
     el_m, el_s = divmod(int(elapsed), 60)
 
     progress_text = f"""<blockquote>‣ <b>Anime Name :</b> <b><i>{file_name}</i></b></blockquote>
-<blockquote>‣ <b>Status :</b> <i>Encoding</i>
+<blockquote>‣ <b>Status :</b> <i>Processing</i>
     {bar}</blockquote>
 <blockquote>   ‣ <b>Size :</b> {convertBytes(ensize)} out of ~ {convertBytes(total_size)}
     ‣ <b>Speed :</b> {convertBytes(speed)}/s
     ‣ <b>Time Took :</b> {el_m}m {el_s}s
     ‣ <b>Time Left :</b> {mins_eta}m {secs_eta}s</blockquote>"""
     await msg.edit(progress_text)
+
+# -------------------- Download Helper -------------------- #
+async def download_file(message, path, msg):
+    start_time = time.time()
+
+    async def progress(current, total):
+        percent = (current / total) * 100
+        await update_progress(msg, message.document.file_name if message.document else message.video.file_name,
+                              percent, start_time, current, total)
+
+    if message.document:
+        await message.download(file_name=path, progress=progress)
+    else:
+        await message.download(file_name=path, progress=progress)
 
 # -------------------- Queue Runner -------------------- #
 async def queue_runner(client):
@@ -51,22 +65,20 @@ async def queue_runner(client):
         msg = encoder.msg
 
         try:
-            # Download
+            # -------------------- Download -------------------- #
             await msg.edit(f"⏳ **Downloading {filename}...**")
-            await encoder.message.download(encoder.dl_path)
+            await download_file(encoder.message, encoder.dl_path, msg)
             await msg.edit(f"⬇️ **Download completed. Starting 720p encoding...**")
 
-            # Start FFEncoder
+            # -------------------- Encoding -------------------- #
             encode_task = create_task(encoder.start_encode())
 
-            # Wait for prog.txt to appear
             while not ospath.exists(encoder._FFEncoder__prog_file):
                 await asyncio.sleep(1)
 
             start_time = time.time()
             last_update = 0
 
-            # Progress loop, update every 10 seconds
             while not encode_task.done():
                 try:
                     async with aiofiles.open(encoder._FFEncoder__prog_file, "r") as f:
@@ -80,7 +92,7 @@ async def queue_runner(client):
                             percent = min((time_done/encoder._FFEncoder__total_time)*100, 100)
 
                             now = time.time()
-                            if now - last_update >= 10:  # update every 10 sec
+                            if now - last_update >= 10:
                                 await update_progress(msg, filename, percent, start_time, ensize, total_size)
                                 last_update = now
                 except Exception as e:
@@ -89,22 +101,21 @@ async def queue_runner(client):
 
             output_path = await encode_task
 
-            # Upload to Telegram
+            # -------------------- Upload -------------------- #
             await client.send_document(
                 chat_id=Var.MAIN_CHANNEL,
                 document=output_path or encoder.dl_path,
                 caption=f"✅ **Encoded 720p: {filename}**"
             )
 
-            # Upload to Google Drive
             try:
                 await gdrive_uploader.upload_to_drive(output_path or encoder.dl_path)
             except Exception as e:
                 LOGS.error(f"GDrive upload failed for {filename}: {str(e)}")
 
-            await msg.edit(f"✅ **Encoding and upload finished: {filename}**")
+            await msg.edit(f"✅ **Processing finished: {filename}**")
 
-            # Auto-delete if enabled
+            # Auto-delete
             if Var.AUTO_DEL:
                 for f in [encoder.dl_path, output_path]:
                     if f and ospath.exists(f):
