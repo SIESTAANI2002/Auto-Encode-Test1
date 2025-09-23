@@ -1,62 +1,152 @@
-from os import path as ospath, makedirs
-from aiofiles.os import remove as aioremove
-from asyncio import Queue
-from bot import Var, LOGS
+from bot import bot, Var, LOGS
+from pyrogram import filters
+from asyncio import Queue, Lock, create_task, gather
+from os import remove, path as ospath
+import os
+from re import findall
+
 from bot.core.ffencoder import FFEncoder
-from bot.core.func_utils import sendMessage, editMessage
 from bot.core import gdrive_uploader
+from bot.core.func_utils import editMessage
 
-# manual encoding queue (to avoid parallel encode crashes)
-manual_queue = Queue()
+# -------------------- Queue & Lock -------------------- #
+ffQueue = Queue()        # waiting tasks
+ffLock = Lock()          # ensures only one runner at a time
+ff_queued = {}           # currently running tasks {filename: encoder_instance}
+runner_task = None       # reference to the queue runner task
 
-async def manual_encode(message, download_path, file_name, quality="720"):
-    """
-    Add a manual encode task to the queue.
-    quality = "1080" or "720"
-    """
-    await manual_queue.put((message, download_path, file_name, quality))
-    if manual_queue.qsize() == 1:
-        await queue_runner()
-
-
-async def queue_runner():
-    """Runs tasks in queue sequentially"""
-    while not manual_queue.empty():
-        message, download_path, file_name, quality = await manual_queue.get()
-
-        # reply message for progress updates
-        msg = await sendMessage(message, f"⬇️ Download completed. Starting {quality}p encoding...")
+# -------------------- Queue Runner -------------------- #
+async def queue_runner(client):
+    global runner_task
+    while not ffQueue.empty():
+        encoder = await ffQueue.get()
+        filename = os.path.basename(encoder.dl_path)
+        ff_queued[filename] = encoder        # mark as running
+        msg = encoder.msg  # bot message for progress
 
         try:
-            makedirs("encode", exist_ok=True)
+            # Download original Telegram file
+            await msg.edit(f"⬇️ Downloading {filename}...")
+            await encoder.dl_message.download(encoder.dl_path)
+            await msg.edit(f"⬇️ Download completed. Starting {encoder._FFEncoder__qual}p encoding...")
 
-            # FFEncoder handles progress + bar updates
-            encoder = FFEncoder(msg, download_path, file_name, quality)
+            # Start FFEncoder progress in background
+            progress_task = create_task(encoder.progress())
 
-            # start encoding
+            # Start encoding
             output_path = await encoder.start_encode()
 
-            if not output_path or not ospath.exists(output_path):
-                await editMessage(msg, f"❌ {quality}p encoding failed.")
-                continue
+            # Cancel progress task after encoding completes
+            progress_task.cancel()
 
-            # upload to GDrive
-            gdrive_link = await upload_to_gdrive(output_path, file_name)
-
-            # final success message
-            await editMessage(
-                msg,
-                f"✅ {quality}p Encoding completed & uploaded!\n\n📁 <b>{file_name}</b>\n🔗 <a href='{gdrive_link}'>Google Drive</a>"
+            # Upload to Telegram
+            await client.send_document(
+                chat_id=Var.MAIN_CHANNEL,
+                document=output_path,
+                caption=f"✅ Encoded {encoder._FFEncoder__qual}p: {filename}"
             )
 
-            # cleanup encoded file
+            # Upload to Google Drive
             try:
-                await aioremove(output_path)
+                await gdrive_uploader.upload_to_drive(output_path)
             except Exception as e:
-                LOGS.warning(f"Cleanup failed: {e}")
+                LOGS.error(f"GDrive upload failed for {filename}: {str(e)}")
+
+            await msg.edit(f"✅ Encoding and upload finished: {filename}")
+
+            # Auto-delete if enabled
+            if Var.AUTO_DEL:
+                for f in [encoder.dl_path, output_path]:
+                    if ospath.exists(f):
+                        remove(f)
 
         except Exception as e:
-            LOGS.error(f"Manual encode error: {e}", exc_info=True)
-            await editMessage(msg, f"❌ Error: {e}")
+            LOGS.error(f"Queue task failed: {filename} | {str(e)}")
+            await msg.edit(f"❌ Task failed: {filename}")
 
-        manual_queue.task_done()
+        finally:
+            ff_queued.pop(filename, None)
+            ffQueue.task_done()
+
+    runner_task = None  # mark runner as stopped when queue is empty
+
+# -------------------- Manual Encode Handler -------------------- #
+@bot.on_message(filters.document | filters.video)
+async def manual_encode(client, message):
+    global runner_task
+    file_name = message.document.file_name if message.document else message.video.file_name
+    download_path = f"downloads/{file_name}"
+
+    # reply message for progress updates
+    msg = await message.reply_text(f"⏳ Queued: {file_name}")
+
+    # FFEncoder: use original message for download, reply message for progress
+    encoder = FFEncoder(message, download_path, file_name, "720")
+    encoder.msg = msg
+    encoder.dl_message = message  # original message for downloading
+
+    await ffQueue.put(encoder)
+    LOGS.info(f"Added {file_name} to queue")
+
+    # Start runner only if not already running
+    if runner_task is None or runner_task.done():
+        runner_task = create_task(queue_runner(client))
+
+# -------------------- Queue Status Command -------------------- #
+@bot.on_message(filters.command("queue"))
+async def queue_status(client, message):
+    status_lines = []
+
+    # Currently running task
+    for fname, encoder in ff_queued.items():
+        status_lines.append(f"▶️ Encoding: {fname}")
+
+    # Waiting tasks
+    if not ffQueue.empty():
+        for encoder in list(ffQueue._queue):
+            filename = os.path.basename(encoder.dl_path)
+            status_lines.append(f"⏳ Waiting: {filename}")
+
+    if not status_lines:
+        await message.reply_text("📭 No files are currently queued.")
+    else:
+        await message.reply_text("\n".join(status_lines))
+
+# -------------------- Cancel Command -------------------- #
+@bot.on_message(filters.command("cancel"))
+async def cancel_encode(client, message):
+    try:
+        filename = message.text.split(maxsplit=1)[1]
+    except IndexError:
+        await message.reply_text("⚠️ Usage: /cancel <filename>")
+        return
+
+    removed = False
+
+    # Check currently encoding
+    if filename in ff_queued:
+        encoder = ff_queued[filename]
+        encoder.is_cancelled = True
+        removed = True
+        await message.reply_text(f"🛑 Cancel request sent for {filename}")
+        return
+
+    # Check waiting queue
+    temp_queue = []
+    while not ffQueue.empty():
+        encoder = await ffQueue.get()
+        if os.path.basename(encoder.dl_path) == filename:
+            removed = True
+            LOGS.info(f"Removed {filename} from waiting queue")
+            ffQueue.task_done()
+        else:
+            temp_queue.append(encoder)
+            ffQueue.task_done()
+
+    for e in temp_queue:
+        await ffQueue.put(e)
+
+    if removed:
+        await message.reply_text(f"🗑️ {filename} removed from queue.")
+    else:
+        await message.reply_text(f"❌ File {filename} not found in queue.")
