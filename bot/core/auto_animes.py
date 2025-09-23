@@ -22,24 +22,43 @@ btn_formatter = {
 
 episode_posts = {}  # cache to prevent duplicate posts per episode
 
-
 async def fetch_animes():
-    """Fetch each RSS feed and schedule get_animes"""
+    """
+    Fetch anime torrents from RSS feeds.
+    Supports:
+      - Single feed (string or list)
+      - Multiple feeds (dict: {"720": "url", "1080": "url"})
+    """
     await rep.report("Fetch Animes Started !!", "info")
+
     while True:
         try:
             await asyncio.sleep(60)
+
             if not ani_cache.get('fetch_animes'):
                 continue
+
             if not Var.RSS_ITEMS:
-                await rep.report("No RSS feeds configured.", "warning")
+                await rep.report("No RSS feeds configured (Var.RSS_ITEMS empty).", "warning")
                 continue
 
-            for qual, feed_link in Var.RSS_ITEMS.items():
+            # Handle multiple feeds (dict)
+            if isinstance(Var.RSS_ITEMS, dict):
+                items = Var.RSS_ITEMS.items()
+            # Handle single feed (string or list)
+            elif isinstance(Var.RSS_ITEMS, str):
+                items = [("default", Var.RSS_ITEMS)]
+            elif isinstance(Var.RSS_ITEMS, list):
+                items = [(f"default_{i}", feed) for i, feed in enumerate(Var.RSS_ITEMS)]
+            else:
+                await rep.report("RSS_ITEMS type not supported.", "error")
+                continue
+
+            for qual, feed_link in items:
                 try:
-                    entry = await getfeed(feed_link, 0)
-                    if entry:
-                        bot_loop.create_task(get_animes(entry.title, entry.link, qual))
+                    info = await getfeed(feed_link, 0)
+                    if info:
+                        bot_loop.create_task(get_animes(info.title, info.link, qual))
                 except Exception as e:
                     await rep.report(f"Error fetching feed {qual}: {e}", "error")
 
