@@ -220,27 +220,39 @@ async def queue_status(client, message):
     else:
         await message.reply_text("\n".join(status_lines))
 
-# -------------------- Cancel Command -------------------- #
-@bot.on_message(filters.command("cancel"))
-async def cancel_encode(client, message):
-    try:
-        filename = message.text.split(maxsplit=1)[1]
-    except IndexError:
-        await message.reply_text("⚠️ **Usage: /cancel <filename>**")
-        return
-
-    removed = False
-
-    if filename in ff_queued:
-        encoder = ff_queued[filename]
-        encoder.is_cancelled = True
-        removed = True
-        await message.reply_text(f"🛑 **Cancel request sent for {filename}**")
-        return
-
-    temp_queue = []
-    while not ffQueue.empty():
-        encoder = await ffQueue.get()
-        if os.path.basename(encoder.dl_path) == filename:
-            removed = True
-            LOGS.info(f"Removed {
+# -------------------- Cancel Command -------------------- #  
+@bot.on_message(filters.command("cancel"))  
+async def cancel_encode(client, message):  
+    try:  
+        filename = message.text.split(maxsplit=1)[1]  
+    except IndexError:  
+        await message.reply_text("⚠️ **Usage: /cancel <filename>**")  
+        return  
+  
+    removed = False  
+  
+    if filename in ff_queued:  
+        encoder = ff_queued[filename]  
+        encoder.is_cancelled = True  
+        removed = True  
+        await message.reply_text(f"🛑 **Cancel request sent for {filename}**")  
+        return  
+  
+    temp_queue = []  
+    while not ffQueue.empty():  
+        encoder = await ffQueue.get()  
+        if os.path.basename(encoder.dl_path) == filename:  
+            removed = True  
+            LOGS.info(f"Removed {filename} from waiting queue")  
+            ffQueue.task_done()  
+        else:  
+            temp_queue.append(encoder)  
+            ffQueue.task_done()  
+  
+    for e in temp_queue:  
+        await ffQueue.put(e)  
+  
+    if removed:  
+        await message.reply_text(f"🗑️ **{filename} removed from queue.**")  
+    else:  
+        await message.reply_text(f"❌ **File {filename} not found in queue.**")  
