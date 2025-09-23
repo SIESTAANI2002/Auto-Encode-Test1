@@ -243,13 +243,4 @@ async def cancel_encode(client, message):
         encoder = await ffQueue.get()
         if os.path.basename(encoder.dl_path) == filename:
             removed = True
-            LOGS.info(f"Removed {filename} from waiting queue")
-            ffQueue.task_done()
-        else:
-            temp_queue.append(encoder)
-            ffQueue.task_done()
-
-    for e in temp_queue:
-        await ffQueue.put(e)
-
-    if
+            LOGS.info(f"Removed {
