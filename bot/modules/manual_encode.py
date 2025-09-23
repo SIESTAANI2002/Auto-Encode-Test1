@@ -6,7 +6,27 @@ from bot.core import gdrive_uploader
 from os import remove, path as ospath
 import os
 from re import findall
-from bot.utils import convertBytes, convertTime  # make sure these exist
+
+# -------------------- Helper Functions -------------------- #
+def convertBytes(size: int) -> str:
+    """Convert bytes to human-readable string."""
+    for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+        if size < 1024:
+            return f"{size:.2f}{unit}"
+        size /= 1024
+    return f"{size:.2f}PB"
+
+def convertTime(seconds: float) -> str:
+    """Convert seconds to hh:mm:ss format."""
+    seconds = int(seconds)
+    h, m = divmod(seconds, 3600)
+    m, s = divmod(m, 60)
+    if h > 0:
+        return f"{h}h {m}m {s}s"
+    elif m > 0:
+        return f"{m}m {s}s"
+    else:
+        return f"{s}s"
 
 # -------------------- Queue & Lock -------------------- #
 ffQueue = Queue()
@@ -49,7 +69,7 @@ async def queue_runner(client):
                                 filled = int(percent / 100 * total_blocks)
                                 bar = "█" * filled + "-" * (total_blocks - filled)
 
-                                # Size & speed
+                                # Size / Speed / ETA
                                 ensize = ospath.getsize(encoder.dl_path) if ospath.exists(encoder.dl_path) else 0
                                 tsize = encoder._FFEncoder__total_size or ensize
                                 speed = ensize / max(time_done, 1)
@@ -109,7 +129,7 @@ async def queue_runner(client):
 
     runner_task = None
 
-# -------------------- Manual Encode -------------------- #
+# -------------------- Manual Encode Handler -------------------- #
 @bot.on_message(filters.document | filters.video)
 async def manual_encode(client, message):
     file_name = message.document.file_name if message.document else message.video.file_name
