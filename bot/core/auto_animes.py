@@ -34,14 +34,15 @@ async def fetch_animes():
     except Exception as e:
         await rep.report(f"DB Load Failed: {e}", "error")
 
+    # ⬇️ Start RSS Torrent background loop (immediately)
+    bot_loop.create_task(start_task())
+
     while True:
         await asyncio.sleep(60)
         if ani_cache.get('fetch_animes'):
             for link in Var.RSS_ITEMS:
                 if (info := await getfeed(link, 0)):
                     bot_loop.create_task(get_animes(info.title, info.link))
-      # ⬇️ Start RSS Torrent background loop
-    bot_loop.create_task(start_task())
 
 async def get_animes(name, torrent, force=False):
     try:
