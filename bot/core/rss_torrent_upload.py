@@ -1,115 +1,101 @@
-import os
+# bot/core/rss_torrent_upload.py
+
 import asyncio
-import feedparser
-from bot import Var, LOGS, bot_loop, ffQueue, ffLock
+from os import path as ospath
+from aiofiles import open as aiopen
+from bot import Var, bot, bot_loop, LOGS, ffQueue, ffLock, ff_queued
 from bot.core.tordownload import TorDownloader
 from bot.core.ffencoder import FFEncoder
 from bot.core.gdrive_uploader import upload_to_drive
-from bot.core.reporter import rep
+from bot.core.database import db
+from bot.core.func_utils import editMessage
 
-# ---------------- Polling download progress ---------------- #
-async def track_download_progress(file_path, msg_id):
-    prev_size = 0
-    while not os.path.exists(file_path):
-        await asyncio.sleep(2)  # wait for file to appear
+downloader = TorDownloader()
 
-    while True:
-        if not os.path.exists(file_path):
-            break
-        curr_size = os.path.getsize(file_path)
-        speed = (curr_size - prev_size) / 10  # bytes per 10s
-        prev_size = curr_size
-
-        mb_done = curr_size / (1024*1024)
-        mb_speed = speed / (1024*1024)
-        await rep.update_report(
-            msg_id,
-            f"⬇️ Downloading: {mb_done:.2f}MB | Speed: {mb_speed:.2f}MB/s"
-        )
-        await asyncio.sleep(10)
-
-# ---------------- Process one torrent ---------------- #
-async def process_torrent(entry):
-    title = entry.title
-    msg_id = await rep.report(f"⬇️ Starting download: {title}", "info")
-
-    tor = TorDownloader()
-    # Start download in background
-    dl_task = asyncio.create_task(tor.download(entry.link, title))
-
-    # Track progress using polling
-    # We assume file will appear in "downloads/" with a .mkv extension (you can adjust)
-    file_name_guess = f"{title}.mkv"
-    file_path = os.path.join("downloads", file_name_guess)
-    progress_task = asyncio.create_task(track_download_progress(file_path, msg_id))
-
-    dl_path = await dl_task
-    await progress_task
-
-    if not dl_path:
-        err = f"❌ Torrent download failed: {title}"
-        LOGS.error(err)
-        await rep.report(err, "error")
-        return
-
-    # ---------------- Rename & Encode ---------------- #
-    new_name = f"[{Var.SECOND_BRAND}] {title} Dual Audio.mkv"
-    new_path = os.path.join("downloads", new_name)
-
-    ff = FFEncoder(message=msg_id, path=dl_path, name=new_name, qual=Var.QUALS[0])
-    encoded_path = await ff.start_encode() or dl_path
-    os.rename(encoded_path, new_path)
-
-    await rep.update_report(msg_id, f"📂 Renamed to: {new_name}")
-
-    # ---------------- Upload ---------------- #
-    upload_msg_id = await rep.report(f"☁️ Uploading: {new_name}", "info")
-    upload_task = asyncio.create_task(upload_to_drive(new_path))
-
-    while not upload_task.done():
-        await rep.update_report(upload_msg_id, f"☁️ Uploading {new_name} …")
-        await asyncio.sleep(10)
-
-    gdrive_link = await upload_task
-    await rep.update_report(upload_msg_id, f"✅ Uploaded: {gdrive_link}")
-
-    # ---------------- Cleanup ---------------- #
-    if Var.AUTO_DEL:
-        os.remove(new_path)
-        await rep.report(f"🗑️ Deleted local file: {new_name}", "info")
-
-# ---------------- Queue worker ---------------- #
-async def queue_worker():
-    while True:
-        post_id, entry = await ffQueue.get()
-        async with ffLock:
-            await process_torrent(entry)
-            ffQueue.task_done()
-        await asyncio.sleep(1)
-
-# ---------------- RSS fetch loop ---------------- #
 async def start_task():
-    LOGS.info("🚀 RSS Torrent Task Started!")
-    await rep.report("🚀 RSS Torrent Task Started!", "info")
-
-    # Start queue worker
-    bot_loop.create_task(queue_worker())
-
+    """Background loop to fetch torrents from RSS_TOR feed."""
     while True:
-        try:
-            for rss_url in Var.RSS_TOR:
-                LOGS.info(f"📡 Checking RSS Feed: {rss_url}")
-                await rep.report(f"📡 Checking RSS Feed: {rss_url}", "info")
+        if not getattr(Var, "RSS_TOR", []):
+            await asyncio.sleep(60)
+            continue
 
-                feed = feedparser.parse(rss_url)
-                entries = feed.entries[:3]  # latest 3 torrents
+        for rss_link in Var.RSS_TOR:
+            try:
+                from feedparser import parse
+                feed = parse(rss_link)
+                for entry in feed.entries:
+                    torrent_link = None
+                    if 'links' in entry:
+                        for l in entry.links:
+                            if l.get('type') == 'application/x-bittorrent':
+                                torrent_link = l['href']
+                                break
+                    if not torrent_link:
+                        continue
 
-                for entry in entries:
-                    await ffQueue.put((id(entry), entry))  # add to queue
+                    post_id = (id(entry), entry)  # Unique queue key
+                    ff_queued[post_id] = asyncio.Event()
+                    await ffQueue.put(post_id)
 
-        except Exception as e:
-            err = f"⚠️ Error in RSS Torrent Loop: {str(e)}"
-            LOGS.error(err)
-            await rep.report(err, "error")
+            except Exception as e:
+                LOGS.error(f"RSS Fetch Failed: {e}")
+        await asyncio.sleep(600)  # Check RSS every 10 min
 
-        await asyncio.sleep(60)  # check feed every 60s
+async def queue_loop():
+    """Sequential queue processing for download → rename → encode → upload."""
+    while True:
+        if not ffQueue.empty():
+            post_id = await ffQueue.get()
+            entry = post_id[1]
+
+            try:
+                msg = await bot.send_message(
+                    chat_id=Var.LOG_CHANNEL or Var.OWNER_ID,
+                    text=f"<b>🔗 Found Torrent:</b> {entry.title}\n\n⏳ Starting download..."
+                )
+
+                # ---------------- Download ---------------- #
+                file_path = await downloader.download(entry.links[0]['href'])
+                if not file_path:
+                    await editMessage(msg, f"❌ Download failed: {entry.title}")
+                    LOGS.error(f"Torrent download failed: {entry.title}")
+                    ffQueue.task_done()
+                    continue
+
+                await editMessage(msg, f"✅ Download finished: {ospath.basename(file_path)}\n⏳ Renaming...")
+
+                # ---------------- Rename ---------------- #
+                orig_name = ospath.basename(file_path)
+                new_name = f"[AnimeToki] {orig_name.split(' ', 1)[1].split('] ', 1)[-1].rsplit('.', 1)[0]} Dual Audio.mkv"
+                new_path = ospath.join(ospath.dirname(file_path), new_name)
+                import aiofiles.os as aioms
+                await aioms.rename(file_path, new_path)
+                file_path = new_path
+                await editMessage(msg, f"✅ Renamed to: {new_name}\n⏳ Starting Encode...")
+
+                # ---------------- Encode ---------------- #
+                qual = "720" if "720" in orig_name else "1080"
+                encoder = FFEncoder(msg, file_path, new_name, qual)
+                encoded_file = await encoder.start_encode()
+                if not encoded_file:
+                    await editMessage(msg, f"❌ Encode failed: {new_name}")
+                    ffQueue.task_done()
+                    continue
+
+                await editMessage(msg, f"✅ Encode finished: {ospath.basename(encoded_file)}\n⏳ Uploading...")
+
+                # ---------------- Upload ---------------- #
+                drive_link = await upload_to_drive(encoded_file)
+                await editMessage(msg, f"✅ Uploaded: [Drive Link]({drive_link})\n🎉 Completed: {new_name}")
+
+                # ---------------- DB Save ---------------- #
+                anime_id = entry.title.split('[')[-1].split(']')[0]
+                await db.saveAnime(anime_id, "01", qual)
+
+            except Exception as e:
+                await editMessage(msg, f"❌ Error: {e}")
+                LOGS.error(f"Queue Task Failed: {e}")
+
+            ffQueue.task_done()
+
+        await asyncio.sleep(2)
