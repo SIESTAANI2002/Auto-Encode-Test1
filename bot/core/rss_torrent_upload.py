@@ -1,88 +1,108 @@
-# bot/core/rss_torrent_upload.py
-
 import asyncio
-from os import path as ospath
-from bot import Var, LOGS, ffQueue, ffLock, ff_queued, bot_loop
-from bot.core.ffencoder import FFEncoder
-from bot.core.func_utils import sendMessage, rep
+import os
+from pathlib import Path
+from xml.etree import ElementTree as ET
+
+from bot import Var, LOGS
+from bot.core.func_utils import convertBytes
 from bot.core.tordownload import TorDownloader
-from bot.core.gdrive_uploader import upload_to_drive
-from bot.core.rss_utils import getfeed  # your RSS fetch utility
+from bot.core.gdrive_uploader import upload_file
+from bot.core.reporter import log_info, log_error
 
-# ------------------ Queue loop ------------------
-async def queue_loop():
-    LOGS.info("Queue loop started!")
-    while True:
-        if not ffQueue.empty():
-            post_id = await ffQueue.get()
-            await asyncio.sleep(1.5)
-            if post_id in ff_queued:
-                ff_queued[post_id].set()
-            await asyncio.sleep(1.5)
-            async with ffLock:
-                ffQueue.task_done()
-        await asyncio.sleep(5)
+# -------------------------------------
+# CONFIG USAGE
+# -------------------------------------
+RSS_TOR = Var.RSS_TOR  # list of RSS feed URLs
+SECOND_BRAND = Var.SECOND_BRAND or "AnimeToki"  # tag to rename
+FFCODE_480 = Var.FFCODE_480  # True if 480p encode is required
 
-# ------------------ RSS Torrent Loop ------------------
-async def start_task():
-    LOGS.info("RSS Torrent Loop Started!")
-    while True:
-        try:
-            for rss_url in getattr(Var, "RSS_TOR", []):
-                feed = await getfeed(rss_url, 0)
-                if not feed or not getattr(feed, 'entries', None):
-                    await rep.report(f"❌ Invalid/Empty RSS Feed: {rss_url}", "error")
-                    continue
-
-                for entry in feed.entries:
-                    post_id = id(entry)
-                    if post_id in ff_queued:
-                        continue
-                    ff_queued[post_id] = asyncio.Event()
-                    await ffQueue.put(post_id)
-                    bot_loop.create_task(process_entry(post_id, entry))
-
-        except Exception as e:
-            await rep.report(f"[ERROR] RSS Fetch Error for {rss_url}: {e}", "error")
-
-        await asyncio.sleep(60)  # check every 1 min
-
-# ------------------ Process single entry ------------------
-async def process_entry(post_id, entry):
-    await ff_queued[post_id].wait()
-    ff_queued[post_id].clear()
-
+# -------------------------------------
+# RSS FETCH & PARSE
+# -------------------------------------
+async def fetch_rss_items(feed_url):
     try:
-        # Get title and link safely
-        if isinstance(entry, dict):
-            title = entry.get("title") or "Unknown Title"
-            link = entry.get("link") or ""
-        else:
-            # fallback if string
-            title = str(entry)
-            link = ""
-
-        LOGS.info(f"⬇️ Starting download: {title}")
-        await rep.report(f"⬇️ Starting download: {title}", "info")
-
-        # ------------------ Download ------------------
-        downloader = TorDownloader(link)
-        dl_path = await downloader.download()
-        LOGS.info(f"Downloaded: {dl_path}")
-        await rep.report(f"✅ Downloaded: {title}", "info")
-
-        # ------------------ Encode ------------------
-        encoder = FFEncoder(None, dl_path, ospath.basename(dl_path), Var.QUALS[0])
-        bot_msg = await sendMessage(f"Encoding started for {title}")
-        encoder.message = bot_msg
-        out_path = await encoder.start_encode()
-        LOGS.info(f"Encoding complete: {out_path}")
-
-        # ------------------ Upload ------------------
-        upload_url = await upload_to_drive(out_path)
-        LOGS.info(f"Uploaded to Drive: {upload_url}")
-        await sendMessage(f"✅ {title} Uploaded!\n{upload_url}")
-
+        import aiohttp
+        async with aiohttp.ClientSession() as session:
+            async with session.get(feed_url) as resp:
+                xml_text = await resp.text()
+        root = ET.fromstring(xml_text)
+        items = root.findall(".//item")
+        torrents = []
+        for item in items:
+            title = item.find("title").text
+            link = item.find("link").text
+            torrents.append({"title": title, "link": link})
+        return torrents
     except Exception as e:
-        LOGS.error(f"[ERROR] Torrent processing failed for {title}: {e}")
-        await rep.report(f"❌ Torrent processing failed for {title}: {e}", "error")
+        log_error(f"RSS fetch failed: {feed_url} | {e}")
+        return []
+
+# -------------------------------------
+# BATCH HANDLER
+# -------------------------------------
+def find_video_files(folder_path):
+    video_ext = [".mkv", ".mp4", ".avi"]
+    files = []
+    for root, _, filenames in os.walk(folder_path):
+        for f in filenames:
+            if Path(f).suffix.lower() in video_ext:
+                files.append(Path(root) / f)
+    return files
+
+# -------------------------------------
+# RENAME & METADATA
+# -------------------------------------
+def rename_and_update_metadata(video_path: Path):
+    try:
+        new_name = f"[{SECOND_BRAND}] {video_path.stem.split(']')[-1].strip()}{video_path.suffix}"
+        new_path = video_path.with_name(new_name)
+        video_path.rename(new_path)
+        # Change metadata without re-encode
+        os.system(f'mkvpropedit "{new_path}" --edit info --set "title={new_name}"')
+        return new_path
+    except Exception as e:
+        log_error(f"Rename/metadata failed: {video_path} | {e}")
+        return None
+
+# -------------------------------------
+# MAIN TASK
+# -------------------------------------
+async def process_rss_feed(feed_url):
+    torrents = await fetch_rss_items(feed_url)
+    for tor in torrents:
+        title = tor["title"]
+        torrent_link = tor["link"]
+        log_info(f"⬇️ Starting download: {title}")
+        try:
+            folder_path = await TorDownloader.download(torrent_url=torrent_link)  # returns folder path
+            if not folder_path:
+                log_error(f"Download failed: {title}")
+                continue
+
+            video_files = find_video_files(folder_path)
+            if not video_files:
+                log_error(f"No video found in: {folder_path}")
+                continue
+
+            for vf in video_files:
+                new_file = rename_and_update_metadata(vf)
+                if new_file:
+                    log_info(f"✅ Renamed & metadata updated: {new_file}")
+                    # Optional 480p encode
+                    if FFCODE_480:
+                        from bot.core.ffencoder import FFEncoder
+                        await FFEncoder.encode_480p(new_file)
+                    # Upload to Google Drive
+                    await upload_file(new_file)
+                    log_info(f"⬆️ Uploaded: {new_file}")
+        except Exception as e:
+            log_error(f"Torrent processing failed: {title} | {e}")
+
+# -------------------------------------
+# LOOP ALL FEEDS
+# -------------------------------------
+async def rss_batch_loop():
+    while True:
+        for feed in RSS_TOR:
+            await process_rss_feed(feed)
+        await asyncio.sleep(Var.RSS_LOOP_INTERVAL or 1800)  # default 30 min
