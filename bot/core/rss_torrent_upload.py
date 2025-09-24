@@ -1,19 +1,32 @@
+import os
 import asyncio
 import feedparser
-import os
 from bot import Var, LOGS, bot_loop, ffQueue, ffLock
 from bot.core.tordownload import TorDownloader
-from bot.core.gdrive_uploader import upload_to_drive
 from bot.core.ffencoder import FFEncoder
+from bot.core.gdrive_uploader import upload_to_drive
 from bot.core.reporter import rep
 
-# ---------------- Progress callback ---------------- #
-async def progress_cb(info, msg_id, title):
-    pct = round(info["done"]*100, 2)
-    speed_mb = info["speed"]/1024/1024
-    eta_sec = int((info["downloaded"]/max(info["speed"],1)))
-    text = f"⬇️ Downloading {title}: {pct}% | {speed_mb:.2f}MB/s | ETA {eta_sec}s"
-    await rep.update_report(msg_id, text)
+# ---------------- Polling download progress ---------------- #
+async def track_download_progress(file_path, msg_id):
+    prev_size = 0
+    while not os.path.exists(file_path):
+        await asyncio.sleep(2)  # wait for file to appear
+
+    while True:
+        if not os.path.exists(file_path):
+            break
+        curr_size = os.path.getsize(file_path)
+        speed = (curr_size - prev_size) / 10  # bytes per 10s
+        prev_size = curr_size
+
+        mb_done = curr_size / (1024*1024)
+        mb_speed = speed / (1024*1024)
+        await rep.update_report(
+            msg_id,
+            f"⬇️ Downloading: {mb_done:.2f}MB | Speed: {mb_speed:.2f}MB/s"
+        )
+        await asyncio.sleep(10)
 
 # ---------------- Process one torrent ---------------- #
 async def process_torrent(entry):
@@ -21,11 +34,17 @@ async def process_torrent(entry):
     msg_id = await rep.report(f"⬇️ Starting download: {title}", "info")
 
     tor = TorDownloader()
-    dl_path = await tor.download(
-        entry.link,
-        title,
-        progress_callback=lambda info: progress_cb(info, msg_id, title)
-    )
+    # Start download in background
+    dl_task = asyncio.create_task(tor.download(entry.link, title))
+
+    # Track progress using polling
+    # We assume file will appear in "downloads/" with a .mkv extension (you can adjust)
+    file_name_guess = f"{title}.mkv"
+    file_path = os.path.join("downloads", file_name_guess)
+    progress_task = asyncio.create_task(track_download_progress(file_path, msg_id))
+
+    dl_path = await dl_task
+    await progress_task
 
     if not dl_path:
         err = f"❌ Torrent download failed: {title}"
@@ -33,7 +52,7 @@ async def process_torrent(entry):
         await rep.report(err, "error")
         return
 
-    # ---------------- Rename & metadata ---------------- #
+    # ---------------- Rename & Encode ---------------- #
     new_name = f"[{Var.SECOND_BRAND}] {title} Dual Audio.mkv"
     new_path = os.path.join("downloads", new_name)
 
@@ -86,8 +105,7 @@ async def start_task():
                 entries = feed.entries[:3]  # latest 3 torrents
 
                 for entry in entries:
-                    # Add torrent to queue
-                    await ffQueue.put((id(entry), entry))
+                    await ffQueue.put((id(entry), entry))  # add to queue
 
         except Exception as e:
             err = f"⚠️ Error in RSS Torrent Loop: {str(e)}"
