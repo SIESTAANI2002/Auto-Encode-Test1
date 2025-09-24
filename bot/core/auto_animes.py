@@ -1,11 +1,11 @@
 # bot/core/auto_animes.py
 import asyncio
 from asyncio import Event
+from asyncio.subprocess import PIPE
 from os import path as ospath
 from aiofiles.os import remove as aioremove
 from traceback import format_exc
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-from bot import bot_loop
 
 from bot import bot, bot_loop, Var, ani_cache, ffQueue, ffLock, ff_queued
 from .tordownload import TorDownloader
@@ -23,16 +23,13 @@ btn_formatter = {
 
 async def fetch_animes():
     await rep.report("Fetch Animes Started !!", "info")
+    while True:
+        await asyncio.sleep(60)
+        if ani_cache.get('fetch_animes'):
+            for link in Var.RSS_ITEMS:
+                if (info := await getfeed(link, 0)):
+                    bot_loop.create_task(get_animes(info.title, info.link))
 
-    # ✅ Load already completed anime from DB into cache (restart protection)
-    try:
-        all_anime = await db.getAllAnime()
-        if all_anime:
-            ani_cache.setdefault("completed", set()).update(all_anime.keys())
-            await rep.report(f"Loaded {len(all_anime)} completed anime from DB", "info")
-    except Exception as e:
-        await rep.report(f"DB Load Failed: {e}", "error")
-                    
 async def get_animes(name, torrent, force=False):
     try:
         aniInfo = TextEditor(name)
@@ -67,28 +64,10 @@ async def get_animes(name, torrent, force=False):
         )
 
         await asyncio.sleep(1.5)
-        stat_msg = await sendMessage(
-            Var.MAIN_CHANNEL,
-            f"‣ <b>Anime Name :</b> <b><i>{name}</i></b>\n\n<i>Downloading...</i>"
-        )
-
-        # ✅ Torrent download with retries
-        retries = 3
-        dl = None
-        for attempt in range(1, retries + 1):
-            await rep.report(f"📥 Download attempt {attempt} for {name}", "info")
-            dl = await TorDownloader("./downloads").download(torrent, name)
-            if dl and ospath.exists(dl):
-                break
-            else:
-                await rep.report("Download failed, retrying...", "warning")
-                await asyncio.sleep(60)  # wait 1 min before retry
-
+        stat_msg = await sendMessage(Var.MAIN_CHANNEL, f"‣ <b>Anime Name :</b> <b><i>{name}</i></b>\n\n<i>Downloading...</i>")
+        dl = await TorDownloader("./downloads").download(torrent, name)
         if not dl or not ospath.exists(dl):
-            await rep.report(
-                f"❌ File Download Incomplete after {retries} attempts, Skipped {name}",
-                "error"
-            )
+            await rep.report(f"File Download Incomplete, Try Again", "error")
             await stat_msg.delete()
             return
 
@@ -96,10 +75,7 @@ async def get_animes(name, torrent, force=False):
         ffEvent = Event()
         ff_queued[post_id] = ffEvent
         if ffLock.locked():
-            await editMessage(
-                stat_msg,
-                f"‣ <b>Anime Name :</b> <b><i>{name}</i></b>\n\n<i>Queued to Encode...</i>"
-            )
+            await editMessage(stat_msg, f"‣ <b>Anime Name :</b> <b><i>{name}</i></b>\n\n<i>Queued to Encode...</i>")
             await rep.report("Added Task to Queue...", "info")
         await ffQueue.put(post_id)
         await ffEvent.wait()
@@ -109,10 +85,7 @@ async def get_animes(name, torrent, force=False):
 
         for qual in Var.QUALS:
             filename = await aniInfo.get_upname(qual)
-            await editMessage(
-                stat_msg,
-                f"‣ <b>Anime Name :</b> <b><i>{name}</i></b>\n\n<i>Ready to Encode...</i>"
-            )
+            await editMessage(stat_msg, f"‣ <b>Anime Name :</b> <b><i>{name}</i></b>\n\n<i>Ready to Encode...</i>")
             await asyncio.sleep(1.5)
             await rep.report("Starting Encode...", "info")
 
@@ -125,10 +98,7 @@ async def get_animes(name, torrent, force=False):
                 return
 
             await rep.report("Successfully Compressed. Now Going To Upload...", "info")
-            await editMessage(
-                stat_msg,
-                f"‣ <b>Anime Name :</b> <b><i>{filename}</i></b>\n\n<i>Ready to Upload...</i>"
-            )
+            await editMessage(stat_msg, f"‣ <b>Anime Name :</b> <b><i>{filename}</i></b>\n\n<i>Ready to Upload...</i>")
             await asyncio.sleep(1.5)
 
             try:
@@ -145,19 +115,12 @@ async def get_animes(name, torrent, force=False):
 
             if post_msg:
                 btn_label = btn_formatter.get(qual, qual)  # Fixed KeyError
-                new_btn = InlineKeyboardButton(
-                    f"{btn_label} - {convertBytes(msg.document.file_size)}",
-                    url=link
-                )
+                new_btn = InlineKeyboardButton(f"{btn_label} - {convertBytes(msg.document.file_size)}", url=link)
                 if len(btns) != 0 and len(btns[-1]) == 1:
                     btns[-1].append(new_btn)
                 else:
                     btns.append([new_btn])
-                await editMessage(
-                    post_msg,
-                    post_msg.caption.html if post_msg.caption else "",
-                    InlineKeyboardMarkup(btns)
-                )
+                await editMessage(post_msg, post_msg.caption.html if post_msg.caption else "", InlineKeyboardMarkup(btns))
 
             await db.saveAnime(ani_id, ep_no, qual, post_id)
             bot_loop.create_task(extra_utils(msg_id, out_path))
