@@ -23,7 +23,7 @@ class RSSAnimeBot:
 
     async def fetch_rss_entries(self):
         entries = []
-        for rss_url in self.Var.RSS_ITEMS:
+        for rss_url in getattr(self.Var, "RSS_TOR", []):
             try:
                 feed = feedparser.parse(rss_url)
                 entries.extend(feed.entries)
