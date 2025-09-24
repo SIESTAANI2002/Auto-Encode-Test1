@@ -1,8 +1,7 @@
 import os
 import asyncio
 import feedparser
-from re import findall
-from bot.core.tordownload import TorDownloader
+from bot.core.torhelper import TorHelper
 from bot.core.ffencoder import FFEncoder
 from bot.core.gdrive_uploader import upload_to_drive
 from bot import LOGS, bot
@@ -10,12 +9,11 @@ from bot.core.func_utils import editMessage
 
 DOWNLOAD_DIR = "downloads"
 PROCESSED_DIR = "processed"
-UPDATE_INTERVAL = 10  # seconds for Telegram update
+UPDATE_INTERVAL = 10  # seconds for Telegram updates
 RSS_FEEDS = os.environ.get("RSS_TOR", "").split()
 MAIN_CHANNEL = int(os.environ.get("MAIN_CHANNEL"))
 LOG_CHANNEL = int(os.environ.get("LOG_CHANNEL", MAIN_CHANNEL))
 
-# Track already downloaded torrents
 downloaded_links = set()
 
 def write_log(message):
@@ -64,16 +62,15 @@ async def encode_video(fpath, msg, step_name, qual="720"):
     return final_path
 
 async def process_torrent(torrent_url, msg):
-    downloader = TorDownloader(DOWNLOAD_DIR)
+    helper = TorHelper(DOWNLOAD_DIR)
     filename = torrent_url.split("/")[-1]
     write_log(f"Start downloading {filename}")
 
-    # Start download
-    download_task = asyncio.create_task(downloader.download(torrent_url))
+    # Start download with progress
+    download_task = asyncio.create_task(helper.download_with_progress(torrent_url))
 
-    # Real-time download progress
     while not download_task.done():
-        percent = int(downloader.current_progress * 50)  # 0–50% for download
+        percent = int(helper.current_progress * 50)  # 0–50% for download
         await update_progress(msg, f"Downloading {filename}", percent)
         await asyncio.sleep(UPDATE_INTERVAL)
 
