@@ -1,5 +1,6 @@
 import json
 import os
+import bot.core.rss_torrent_upload
 from os import path as ospath, mkdir, system, getenv
 from logging import INFO, ERROR, FileHandler, StreamHandler, basicConfig, getLogger
 from traceback import format_exc
