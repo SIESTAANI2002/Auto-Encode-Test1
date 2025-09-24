@@ -88,12 +88,12 @@ async def process_torrent(torrent_url, msg):
     filename = torrent_url.split("/")[-1]
     write_log(f"Start downloading {filename}")
 
-    # Download with real-time progress
+    # Start download with real-time progress
     download_task = asyncio.create_task(helper.download_with_progress(torrent_url))
 
     # Update Telegram progress based on helper.current_progress
     while not download_task.done():
-        percent = int(helper.current_progress * 50)
+        percent = int(helper.current_progress * 50)  # 0-50% for download
         await update_progress(msg, f"Downloading {filename}", percent)
         await asyncio.sleep(UPDATE_INTERVAL)
 
@@ -141,4 +141,5 @@ async def rss_watcher():
 
 
 async def start_pipeline():
+    """Call this in main.py or wherever the bot starts"""
     asyncio.create_task(rss_watcher())
