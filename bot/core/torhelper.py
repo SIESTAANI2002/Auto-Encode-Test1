@@ -5,33 +5,45 @@ from os import path as ospath
 
 class TorHelper:
     def __init__(self, download_dir="./downloads"):
+        """
+        Initialize TorHelper with a download directory.
+        """
         self.downloader = TorDownloader(download_dir)
-        self.current_progress = 0.0
+        self.current_progress = 0.0  # 0.0 -> 1.0
         self.downloaded_file = None
+        self.download_dir = download_dir
 
     async def download_with_progress(self, torrent_url):
+        """
+        Downloads a torrent and updates current_progress gradually.
+        Returns the downloaded file path when done.
+        """
+        # Start the download in background
         download_task = asyncio.create_task(self.downloader.download(torrent_url))
 
-        # Wait a little for file to appear
-        await asyncio.sleep(1)
-        total_size = None
+        # Smooth progress simulation
+        smooth_progress = 0.0
+        self.current_progress = 0.0
 
         while not download_task.done():
-            try:
-                # get first file in download folder
-                files = os.listdir(self.downloader._TorDownloader__downdir)
-                if files:
-                    fpath = ospath.join(self.downloader._TorDownloader__downdir, files[0])
-                    size = ospath.getsize(fpath)
-                    if total_size is None:
-                        # Estimate total size as double the current file size initially
-                        total_size = max(size * 2, 1)
-                    self.current_progress = min(size / total_size, 0.95)
-            except:
-                self.current_progress = 0.0
-            await asyncio.sleep(2)  # check progress every 2 seconds
+            # Slowly increase progress to 95% while download runs
+            smooth_progress = min(smooth_progress + 0.02, 0.95)
+            self.current_progress = smooth_progress
+            await asyncio.sleep(1)
 
         # Download finished
         self.downloaded_file = await download_task
         self.current_progress = 1.0
+
+        # Optional: ensure the file exists
+        if self.downloaded_file and ospath.exists(self.downloaded_file):
+            return self.downloaded_file
+        return None
+
+    async def wait_for_download(self):
+        """
+        Wait until the download finishes (helper method if needed).
+        """
+        while self.current_progress < 1.0:
+            await asyncio.sleep(1)
         return self.downloaded_file
