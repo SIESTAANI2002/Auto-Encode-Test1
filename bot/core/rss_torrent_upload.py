@@ -5,6 +5,7 @@ from bot.core.ffencoder import FFEncoder
 from bot.core.gdrive_uploader import upload_to_drive
 from bot.core.reporter import rep
 from bot.core.database import db
+from bot.core.func_utils import getfeed
 
 # ---------------- Queue Loop ---------------- #
 async def queue_loop():
