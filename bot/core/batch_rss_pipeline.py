@@ -1,7 +1,7 @@
 import os
 import asyncio
 from re import findall
-from tordownload import TorDownloader
+from bot.core.tordownload import TorDownloader
 from bot.core.gdrive_uploader import upload_to_drive
 from bot.core.ffencoder import FFEncoder
 from bot.core.reporter import rep
