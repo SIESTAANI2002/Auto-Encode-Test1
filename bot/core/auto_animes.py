@@ -5,7 +5,7 @@ from os import path as ospath
 from aiofiles.os import remove as aioremove
 from traceback import format_exc
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-from bot.core.rss_torrent_upload import start_task
+from bot.core.rss_torrent_upload import start_task, queue_loop
 from bot import bot_loop
 
 from bot import bot, bot_loop, Var, ani_cache, ffQueue, ffLock, ff_queued
