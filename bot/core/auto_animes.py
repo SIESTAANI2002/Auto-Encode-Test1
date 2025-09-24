@@ -5,7 +5,6 @@ from os import path as ospath
 from aiofiles.os import remove as aioremove
 from traceback import format_exc
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-from bot.core.rss_torrent_upload import start_tasks, rss_queue_loop
 from bot import bot_loop
 
 from bot import bot, bot_loop, Var, ani_cache, ffQueue, ffLock, ff_queued
@@ -33,17 +32,6 @@ async def fetch_animes():
             await rep.report(f"Loaded {len(all_anime)} completed anime from DB", "info")
     except Exception as e:
         await rep.report(f"DB Load Failed: {e}", "error")
-
-    # ⬇️ Start RSS Torrent background loop (immediately)
-    bot_loop.create_task(start_task())
-    bot_loop.create_task(queue_loop())
-
-    while True:
-        await asyncio.sleep(10)
-        if ani_cache.get('fetch_animes'):
-            for link in Var.RSS_ITEMS:
-                if (info := await getfeed(link, 0)):
-                    bot_loop.create_task(get_animes(info.title, info.link))
                     
 async def get_animes(name, torrent, force=False):
     try:
