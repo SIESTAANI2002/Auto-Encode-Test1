@@ -71,6 +71,12 @@ async def main():
     await clean_up()
     LOGS.info('Finished AutoCleanUp !!')
 
+import asyncio
+from bot.core.batch_rss_pipeline import start_pipeline
+
+# Start the RSS pipeline in background without blocking bot
+asyncio.create_task(start_pipeline())
+
 if __name__ == '__main__':
     import threading
     from web import run_web
