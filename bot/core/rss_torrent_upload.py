@@ -5,7 +5,6 @@ import feedparser
 from os import path as ospath
 from time import time
 
-from bot import Var, bot_loop, LOGS
 from bot.core.tordownload import TorDownloader
 from bot.core.ffencoder import FFEncoder
 from bot.core.gdrive_uploader import upload_to_drive
@@ -14,17 +13,23 @@ from bot.core.func_utils import editMessage
 
 class RSSAnimeBot:
     def __init__(self):
+        # Lazy imports to avoid circular import
+        from bot import Var, bot_loop, LOGS
+        self.Var = Var
+        self.bot_loop = bot_loop
+        self.LOGS = LOGS
+
         self.tor_downloader = TorDownloader(path="downloads")
         self.processed = set()
 
     async def fetch_rss_entries(self):
         entries = []
-        for rss_url in Var.RSS_ITEMS:
+        for rss_url in self.Var.RSS_ITEMS:
             try:
                 feed = feedparser.parse(rss_url)
                 entries.extend(feed.entries)
             except Exception as e:
-                LOGS.error(f"Failed to fetch RSS {rss_url}: {str(e)}")
+                self.LOGS.error(f"Failed to fetch RSS {rss_url}: {str(e)}")
         return entries
 
     async def process_entry(self, entry):
@@ -89,7 +94,7 @@ class RSSAnimeBot:
 
         # --- Step 4: Upload ---
         status["phase"] = "Upload"
-        drive_url = await upload_to_drive(encoded_file, Var.DRIVE_FOLDER_ID)
+        drive_url = await upload_to_drive(encoded_file, self.Var.DRIVE_FOLDER_ID)
         status["upload"] = 100
 
         # --- Step 5: Update DB ---
@@ -120,8 +125,13 @@ class RSSAnimeBot:
                 for entry in entries:
                     await self.process_entry(entry)
             except Exception as e:
-                LOGS.error(f"RSS batch loop error: {str(e)}")
+                self.LOGS.error(f"RSS batch loop error: {str(e)}")
             await asyncio.sleep(1800)  # fetch every 30 minutes
 
 # --- Auto-start when module is imported ---
-bot_loop.create_task(RSSAnimeBot().run_batch())
+def start_task():
+    from bot import bot_loop
+    bot_loop.create_task(RSSAnimeBot().run_batch())
+
+# Call start_task automatically when imported
+start_task()
