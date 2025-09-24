@@ -2,7 +2,6 @@ import os
 import asyncio
 import feedparser
 from re import findall
-import aiohttp
 
 from bot.core.torhelper import TorHelper
 from bot.core.ffencoder import FFEncoder
@@ -64,28 +63,11 @@ def rename_video_file(file_path):
 
 
 # =========================
-# Torrent validation + retry
+# Download with retries
 # =========================
-async def is_valid_torrent(url):
-    """Check if the URL points to a valid .torrent file."""
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, allow_redirects=True) as resp:
-                if resp.status == 200:
-                    content_type = resp.headers.get("Content-Type", "")
-                    if "application/x-bittorrent" in content_type or url.endswith(".torrent"):
-                        return True
-    except Exception as e:
-        LOGS.warning(f"Torrent check failed for {url}: {e}")
-    return False
-
-
 async def download_with_retry(helper, url, max_retries=3):
-    """Download torrent with retries if needed."""
+    """Download torrent, retries if fails."""
     for attempt in range(1, max_retries + 1):
-        if not await is_valid_torrent(url):
-            LOGS.warning(f"Invalid torrent URL: {url}")
-            return None
         try:
             file_path = await helper.download_with_progress(url)
             if file_path:
@@ -138,7 +120,7 @@ async def process_torrent(torrent_url, msg):
     filename = torrent_url.split("/")[-1]
     write_log(f"Start downloading {filename}")
 
-    # Download with validation and retry
+    # Download with retry
     download_task = asyncio.create_task(download_with_retry(helper, torrent_url, max_retries=3))
 
     # Download progress 0-50%
