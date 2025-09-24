@@ -36,6 +36,7 @@ async def fetch_animes():
 
     # ⬇️ Start RSS Torrent background loop (immediately)
     bot_loop.create_task(start_task())
+    bot_loop.create_task(queue_loop())
 
     while True:
         await asyncio.sleep(60)
