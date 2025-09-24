@@ -5,6 +5,8 @@ from os import path as ospath
 from aiofiles.os import remove as aioremove
 from traceback import format_exc
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from bot.core.rss_torrent_upload import start_task
+from bot import bot_loop
 
 from bot import bot, bot_loop, Var, ani_cache, ffQueue, ffLock, ff_queued
 from .tordownload import TorDownloader
@@ -38,6 +40,8 @@ async def fetch_animes():
             for link in Var.RSS_ITEMS:
                 if (info := await getfeed(link, 0)):
                     bot_loop.create_task(get_animes(info.title, info.link))
+      # ⬇️ Start RSS Torrent background loop
+    bot_loop.create_task(start_task())
 
 async def get_animes(name, torrent, force=False):
     try:
