@@ -6,9 +6,22 @@ from bot.core.ffencoder import FFEncoder
 from bot.core.gdrive_uploader import upload_to_drive
 from bot import LOGS, bot
 from bot.core.func_utils import editMessage
+from re import findall
 
+# =========================
+# Ensure folders exist
+# =========================
+TORRENTS_DIR = "torrents/"
 DOWNLOAD_DIR = "downloads"
 PROCESSED_DIR = "processed"
+
+for folder in [TORRENTS_DIR, DOWNLOAD_DIR, PROCESSED_DIR]:
+    if not os.path.exists(folder):
+        os.makedirs(folder, exist_ok=True)
+
+# =========================
+# Pipeline settings
+# =========================
 UPDATE_INTERVAL = 10  # seconds for Telegram updates
 RSS_FEEDS = os.environ.get("RSS_TOR", "").split()
 MAIN_CHANNEL = int(os.environ.get("MAIN_CHANNEL"))
