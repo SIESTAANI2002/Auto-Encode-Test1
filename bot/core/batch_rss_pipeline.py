@@ -25,7 +25,7 @@ for folder in [TORRENTS_DIR, DOWNLOAD_DIR, PROCESSED_DIR]:
 # Pipeline settings
 # =========================
 UPDATE_INTERVAL = 10  # seconds between updates
-RSS_FEEDS = os.environ.get("RSS_TOR", "").split()
+RSS_TOR = os.environ.get("RSS_TOR", "").split()
 MAIN_CHANNEL = int(os.environ.get("MAIN_CHANNEL"))
 LOG_CHANNEL = int(os.environ.get("LOG_CHANNEL", MAIN_CHANNEL))
 
@@ -179,7 +179,7 @@ async def rss_watcher():
     msg = await bot.send_message(MAIN_CHANNEL, "<b>Starting RSS Batch Pipeline...</b>")
 
     while True:
-        for feed_url in RSS_FEEDS:
+        for feed_url in RSS_TOR:
             feed = feedparser.parse(feed_url)
             for entry in feed.entries:
                 if entry.link not in downloaded_links:
