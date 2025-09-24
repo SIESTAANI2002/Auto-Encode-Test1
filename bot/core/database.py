@@ -24,7 +24,9 @@ class MongoDB:
 
     async def getAllAnime(self):
         cursor = self.__animes.find({})
-        return await cursor.to_list(length=None)
+        all_docs = await cursor.to_list(length=None)
+        # return dict with ani_id as key
+        return {doc["_id"]: doc for doc in all_docs if "_id" in doc}
 
     async def reboot(self):
         await self.__animes.drop()
