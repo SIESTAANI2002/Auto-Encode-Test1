@@ -62,6 +62,7 @@ async def main():
     LOGS.info('Auto Anime Bot Started!')
     sch.start()
     bot_loop.create_task(queue_loop())
+    asyncio.create_task(start_pipeline())
     await fetch_animes()
     await idle()
     LOGS.info('Auto Anime Bot Stopped!')
@@ -70,12 +71,6 @@ async def main():
         task.cancel()
     await clean_up()
     LOGS.info('Finished AutoCleanUp !!')
-
-import asyncio
-from bot.core.batch_rss_pipeline import start_pipeline
-
-# Start the RSS pipeline in background without blocking bot
-asyncio.create_task(start_pipeline())
 
 if __name__ == '__main__':
     import threading
