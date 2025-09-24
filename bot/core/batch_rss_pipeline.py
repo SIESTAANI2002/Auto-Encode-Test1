@@ -2,6 +2,7 @@ import os
 import asyncio
 import feedparser
 from re import findall
+import aiohttp
 
 from bot.core.torhelper import TorHelper
 from bot.core.ffencoder import FFEncoder
@@ -35,11 +36,10 @@ def write_log(message):
     LOGS.info(message)
 
 
+# =========================
+# Flood-safe Telegram progress
+# =========================
 async def update_progress(msg, step_name, percent, last_percent=[-1]):
-    """
-    Flood-safe Telegram progress update.
-    Only updates if percent changed by >=2% or percent=100
-    """
     if abs(percent - last_percent[0]) >= 2 or percent == 100:
         bar = "█" * (percent // 8) + "▒" * (12 - percent // 8)
         text = f"""<b>Pipeline Progress</b>
@@ -63,6 +63,41 @@ def rename_video_file(file_path):
     return new_path
 
 
+# =========================
+# Torrent validation + retry
+# =========================
+async def is_valid_torrent(url):
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as resp:
+                if resp.status == 200:
+                    data = await resp.read()
+                    if data and data[:4] != b'<html':
+                        return True
+    except Exception as e:
+        LOGS.warning(f"Torrent check failed for {url}: {e}")
+    return False
+
+
+async def download_with_retry(helper, url, max_retries=3):
+    for attempt in range(1, max_retries + 1):
+        if not await is_valid_torrent(url):
+            LOGS.warning(f"Invalid torrent URL: {url}")
+            return None
+        try:
+            file_path = await helper.download_with_progress(url)
+            if file_path:
+                return file_path
+        except Exception as e:
+            LOGS.warning(f"Attempt {attempt} failed for {url}: {e}")
+        await asyncio.sleep(5)
+    LOGS.error(f"Download failed after {max_retries} attempts: {url}")
+    return None
+
+
+# =========================
+# Encode video
+# =========================
 async def encode_video(fpath, msg, step_name, qual="720"):
     ffencoder = FFEncoder(
         message=None,
@@ -93,13 +128,16 @@ async def encode_video(fpath, msg, step_name, qual="720"):
     return final_path
 
 
+# =========================
+# Process a single torrent
+# =========================
 async def process_torrent(torrent_url, msg):
     helper = TorHelper(DOWNLOAD_DIR)
     filename = torrent_url.split("/")[-1]
     write_log(f"Start downloading {filename}")
 
-    # Start download with progress
-    download_task = asyncio.create_task(helper.download_with_progress(torrent_url))
+    # Download with validation and retry
+    download_task = asyncio.create_task(download_with_retry(helper, torrent_url, max_retries=3))
 
     # Download progress 0-50%
     while not download_task.done():
@@ -117,7 +155,7 @@ async def process_torrent(torrent_url, msg):
     # Rename
     new_path = rename_video_file(file_path)
 
-    # Encode progress 50-100%
+    # Encode 50-95%
     final_path = await encode_video(new_path, msg, f"Encoding {filename}")
 
     # Move to processed folder
@@ -128,12 +166,15 @@ async def process_torrent(torrent_url, msg):
     await update_progress(msg, f"Moved {filename}", 95)
     write_log(f"Moved to processed folder: {proc_path}")
 
-    # Upload to Drive (keep at 95% during upload)
+    # Upload to Drive (95–100%)
     drive_link = await upload_to_drive(proc_path)
     await update_progress(msg, f"Uploaded {filename}", 100)
     write_log(f"Uploaded to Drive: {drive_link}")
 
 
+# =========================
+# RSS watcher
+# =========================
 async def rss_watcher():
     msg = await bot.send_message(MAIN_CHANNEL, "<b>Starting RSS Batch Pipeline...</b>")
 
@@ -147,5 +188,8 @@ async def rss_watcher():
         await asyncio.sleep(600)  # check RSS every 10 minutes
 
 
+# =========================
+# Start pipeline
+# =========================
 async def start_pipeline():
     asyncio.create_task(rss_watcher())
