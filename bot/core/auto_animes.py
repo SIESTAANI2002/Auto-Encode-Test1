@@ -39,7 +39,7 @@ async def fetch_animes():
     bot_loop.create_task(queue_loop())
 
     while True:
-        await asyncio.sleep(60)
+        await asyncio.sleep(10)
         if ani_cache.get('fetch_animes'):
             for link in Var.RSS_ITEMS:
                 if (info := await getfeed(link, 0)):
