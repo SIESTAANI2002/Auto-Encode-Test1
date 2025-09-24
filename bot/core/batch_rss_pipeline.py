@@ -9,9 +9,6 @@ from bot.core.gdrive_uploader import upload_to_drive
 from bot import LOGS, bot
 from bot.core.func_utils import editMessage
 
-# =========================
-# Ensure folders exist
-# =========================
 TORRENTS_DIR = "torrents/"
 DOWNLOAD_DIR = "downloads"
 PROCESSED_DIR = "processed"
@@ -20,9 +17,6 @@ for folder in [TORRENTS_DIR, DOWNLOAD_DIR, PROCESSED_DIR]:
     if not os.path.exists(folder):
         os.makedirs(folder, exist_ok=True)
 
-# =========================
-# Pipeline settings
-# =========================
 UPDATE_INTERVAL = 10  # seconds between Telegram updates
 RSS_FEEDS = os.environ.get("RSS_TOR", "").split()
 MAIN_CHANNEL = int(os.environ.get("MAIN_CHANNEL"))
@@ -35,16 +29,13 @@ def write_log(message):
     LOGS.info(message)
 
 
-# =========================
-# Flood-safe Telegram progress
-# =========================
 async def update_progress(msg, step_name, percent, last_percent=[-1]):
+    """Flood-safe Telegram progress updates every 10 seconds or on meaningful change."""
     if abs(percent - last_percent[0]) >= 2 or percent == 100:
         bar = "█" * (percent // 8) + "▒" * (12 - percent // 8)
         text = f"""<b>Pipeline Progress</b>
 ‣ Step: {step_name}
-‣ {bar} {percent}%
-"""
+‣ {bar} {percent}%"""
         try:
             await msg.edit_text(text)
             last_percent[0] = percent
@@ -62,26 +53,6 @@ def rename_video_file(file_path):
     return new_path
 
 
-# =========================
-# Download with retries
-# =========================
-async def download_with_retry(helper, url, max_retries=3):
-    """Download torrent, retries if fails."""
-    for attempt in range(1, max_retries + 1):
-        try:
-            file_path = await helper.download_with_progress(url)
-            if file_path:
-                return file_path
-        except Exception as e:
-            LOGS.warning(f"Attempt {attempt} failed for {url}: {e}")
-        await asyncio.sleep(5)
-    LOGS.error(f"Download failed after {max_retries} attempts: {url}")
-    return None
-
-
-# =========================
-# Encode video
-# =========================
 async def encode_video(fpath, msg, step_name, qual="720"):
     ffencoder = FFEncoder(
         message=None,
@@ -112,18 +83,15 @@ async def encode_video(fpath, msg, step_name, qual="720"):
     return final_path
 
 
-# =========================
-# Process a single torrent
-# =========================
 async def process_torrent(torrent_url, msg):
     helper = TorHelper(DOWNLOAD_DIR)
     filename = torrent_url.split("/")[-1]
     write_log(f"Start downloading {filename}")
 
-    # Download with retry
-    download_task = asyncio.create_task(download_with_retry(helper, torrent_url, max_retries=3))
+    # Download with real-time progress
+    download_task = asyncio.create_task(helper.download_with_progress(torrent_url))
 
-    # Download progress 0-50%
+    # Update Telegram progress based on helper.current_progress
     while not download_task.done():
         percent = int(helper.current_progress * 50)
         await update_progress(msg, f"Downloading {filename}", percent)
@@ -156,9 +124,6 @@ async def process_torrent(torrent_url, msg):
     write_log(f"Uploaded to Drive: {drive_link}")
 
 
-# =========================
-# RSS watcher — only first new link per cycle
-# =========================
 async def rss_watcher():
     msg = await bot.send_message(MAIN_CHANNEL, "<b>Starting RSS Batch Pipeline...</b>")
 
@@ -168,15 +133,12 @@ async def rss_watcher():
             for entry in feed.entries:
                 if entry.link not in downloaded_links:
                     downloaded_links.add(entry.link)
-                    # Process only first new link
+                    # Only process the first new link
                     asyncio.create_task(process_torrent(entry.link, msg))
-                    break  # <-- stop after first new link
-            break  # <-- stop after first feed
+                    break  # stop after first new link
+            break  # stop after first feed
         await asyncio.sleep(600)  # check RSS every 10 minutes
 
 
-# =========================
-# Start pipeline
-# =========================
 async def start_pipeline():
     asyncio.create_task(rss_watcher())
