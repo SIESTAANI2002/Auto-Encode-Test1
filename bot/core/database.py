@@ -16,7 +16,15 @@ class MongoDB:
         quals[qual] = True
         await self.__animes.update_one({'_id': ani_id}, {'$set': {ep: quals}}, upsert=True)
         if post_id:
-            await self.__animes.update_one({'_id': ani_id}, {'$set': {"msg_id": post_id}}, upsert=True)
+            await self.__animes.update_one(
+                {'_id': ani_id},
+                {'$set': {"msg_id": post_id}},
+                upsert=True
+            )
+
+    async def getAllAnime(self):
+        cursor = self.__animes.find({})
+        return await cursor.to_list(length=None)
 
     async def reboot(self):
         await self.__animes.drop()
