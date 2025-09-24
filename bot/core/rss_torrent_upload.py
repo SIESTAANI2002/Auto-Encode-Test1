@@ -1,5 +1,3 @@
-# bot/core/rss_torrent_upload.py
-
 import asyncio
 import feedparser
 from os import path as ospath
@@ -11,9 +9,10 @@ from bot.core.gdrive_uploader import upload_to_drive
 from bot.core.database import db
 from bot.core.func_utils import editMessage
 
+
 class RSSAnimeBot:
     def __init__(self):
-        # Lazy imports to avoid circular import
+        # Lazy import to avoid circular import
         from bot import Var, bot_loop, LOGS
         self.Var = Var
         self.bot_loop = bot_loop
@@ -128,10 +127,8 @@ class RSSAnimeBot:
                 self.LOGS.error(f"RSS batch loop error: {str(e)}")
             await asyncio.sleep(1800)  # fetch every 30 minutes
 
-# --- Auto-start when module is imported ---
+
+# --- Function to safely start the background task ---
 def start_task():
     from bot import bot_loop
     bot_loop.create_task(RSSAnimeBot().run_batch())
-
-# Call start_task automatically when imported
-start_task()
