@@ -157,7 +157,7 @@ async def process_torrent(torrent_url, msg):
 
 
 # =========================
-# RSS watcher
+# RSS watcher — only first new link per cycle
 # =========================
 async def rss_watcher():
     msg = await bot.send_message(MAIN_CHANNEL, "<b>Starting RSS Batch Pipeline...</b>")
@@ -168,7 +168,10 @@ async def rss_watcher():
             for entry in feed.entries:
                 if entry.link not in downloaded_links:
                     downloaded_links.add(entry.link)
+                    # Process only first new link
                     asyncio.create_task(process_torrent(entry.link, msg))
+                    break  # <-- stop after first new link
+            break  # <-- stop after first feed
         await asyncio.sleep(600)  # check RSS every 10 minutes
 
 
