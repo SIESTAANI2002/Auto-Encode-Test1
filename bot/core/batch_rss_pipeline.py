@@ -24,8 +24,8 @@ for folder in [TORRENTS_DIR, DOWNLOAD_DIR, PROCESSED_DIR]:
 # =========================
 # Pipeline settings
 # =========================
-UPDATE_INTERVAL = 10  # seconds between updates
-RSS_TOR = os.environ.get("RSS_TOR", "").split()
+UPDATE_INTERVAL = 10  # seconds between Telegram updates
+RSS_FEEDS = os.environ.get("RSS_TOR", "").split()
 MAIN_CHANNEL = int(os.environ.get("MAIN_CHANNEL"))
 LOG_CHANNEL = int(os.environ.get("LOG_CHANNEL", MAIN_CHANNEL))
 
@@ -67,12 +67,13 @@ def rename_video_file(file_path):
 # Torrent validation + retry
 # =========================
 async def is_valid_torrent(url):
+    """Check if the URL points to a valid .torrent file."""
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(url) as resp:
+            async with session.get(url, allow_redirects=True) as resp:
                 if resp.status == 200:
-                    data = await resp.read()
-                    if data and data[:4] != b'<html':
+                    content_type = resp.headers.get("Content-Type", "")
+                    if "application/x-bittorrent" in content_type or url.endswith(".torrent"):
                         return True
     except Exception as e:
         LOGS.warning(f"Torrent check failed for {url}: {e}")
@@ -80,6 +81,7 @@ async def is_valid_torrent(url):
 
 
 async def download_with_retry(helper, url, max_retries=3):
+    """Download torrent with retries if needed."""
     for attempt in range(1, max_retries + 1):
         if not await is_valid_torrent(url):
             LOGS.warning(f"Invalid torrent URL: {url}")
@@ -179,7 +181,7 @@ async def rss_watcher():
     msg = await bot.send_message(MAIN_CHANNEL, "<b>Starting RSS Batch Pipeline...</b>")
 
     while True:
-        for feed_url in RSS_TOR:
+        for feed_url in RSS_FEEDS:
             feed = feedparser.parse(feed_url)
             for entry in feed.entries:
                 if entry.link not in downloaded_links:
