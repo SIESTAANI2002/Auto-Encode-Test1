@@ -1,12 +1,13 @@
 import os
 import asyncio
 import feedparser
+from re import findall
+
 from bot.core.torhelper import TorHelper
 from bot.core.ffencoder import FFEncoder
 from bot.core.gdrive_uploader import upload_to_drive
 from bot import LOGS, bot
 from bot.core.func_utils import editMessage
-from re import findall
 
 # =========================
 # Ensure folders exist
@@ -22,23 +23,35 @@ for folder in [TORRENTS_DIR, DOWNLOAD_DIR, PROCESSED_DIR]:
 # =========================
 # Pipeline settings
 # =========================
-UPDATE_INTERVAL = 10  # seconds for Telegram updates
+UPDATE_INTERVAL = 10  # seconds between updates
 RSS_FEEDS = os.environ.get("RSS_TOR", "").split()
 MAIN_CHANNEL = int(os.environ.get("MAIN_CHANNEL"))
 LOG_CHANNEL = int(os.environ.get("LOG_CHANNEL", MAIN_CHANNEL))
 
 downloaded_links = set()
 
+
 def write_log(message):
     LOGS.info(message)
 
-async def update_progress(msg, step_name, percent):
-    bar = "█" * (percent // 8) + "▒" * (12 - percent // 8)
-    text = f"""<b>Pipeline Progress</b>
+
+async def update_progress(msg, step_name, percent, last_percent=[-1]):
+    """
+    Flood-safe Telegram progress update.
+    Only updates if percent changed by >=2% or percent=100
+    """
+    if abs(percent - last_percent[0]) >= 2 or percent == 100:
+        bar = "█" * (percent // 8) + "▒" * (12 - percent // 8)
+        text = f"""<b>Pipeline Progress</b>
 ‣ Step: {step_name}
 ‣ {bar} {percent}%
 """
-    await editMessage(msg, text)
+        try:
+            await msg.edit_text(text)
+            last_percent[0] = percent
+        except Exception as e:
+            LOGS.warning(f"[WARNING] Telegram says: {str(e)}")
+
 
 def rename_video_file(file_path):
     dir_name, filename = os.path.split(file_path)
@@ -49,9 +62,14 @@ def rename_video_file(file_path):
     write_log(f"Renamed {file_path} → {new_path}")
     return new_path
 
+
 async def encode_video(fpath, msg, step_name, qual="720"):
-    ffencoder = FFEncoder(message=None, path=os.path.dirname(fpath),
-                          name=os.path.basename(fpath), qual=qual)
+    ffencoder = FFEncoder(
+        message=None,
+        path=os.path.dirname(fpath),
+        name=os.path.basename(fpath),
+        qual=qual,
+    )
 
     async def update_encoding_progress():
         while ffencoder._FFEncoder__proc is None or not ffencoder.is_cancelled:
@@ -74,6 +92,7 @@ async def encode_video(fpath, msg, step_name, qual="720"):
     final_path = await ffencoder.start_encode()
     return final_path
 
+
 async def process_torrent(torrent_url, msg):
     helper = TorHelper(DOWNLOAD_DIR)
     filename = torrent_url.split("/")[-1]
@@ -82,8 +101,9 @@ async def process_torrent(torrent_url, msg):
     # Start download with progress
     download_task = asyncio.create_task(helper.download_with_progress(torrent_url))
 
+    # Download progress 0-50%
     while not download_task.done():
-        percent = int(helper.current_progress * 50)  # 0–50% for download
+        percent = int(helper.current_progress * 50)
         await update_progress(msg, f"Downloading {filename}", percent)
         await asyncio.sleep(UPDATE_INTERVAL)
 
@@ -97,7 +117,7 @@ async def process_torrent(torrent_url, msg):
     # Rename
     new_path = rename_video_file(file_path)
 
-    # Encode
+    # Encode progress 50-100%
     final_path = await encode_video(new_path, msg, f"Encoding {filename}")
 
     # Move to processed folder
@@ -105,13 +125,14 @@ async def process_torrent(torrent_url, msg):
         os.makedirs(PROCESSED_DIR)
     proc_path = os.path.join(PROCESSED_DIR, os.path.basename(final_path))
     os.rename(final_path, proc_path)
-    await update_progress(msg, f"Moved {filename}", 90)
+    await update_progress(msg, f"Moved {filename}", 95)
     write_log(f"Moved to processed folder: {proc_path}")
 
-    # Upload to Drive
+    # Upload to Drive (keep at 95% during upload)
     drive_link = await upload_to_drive(proc_path)
     await update_progress(msg, f"Uploaded {filename}", 100)
     write_log(f"Uploaded to Drive: {drive_link}")
+
 
 async def rss_watcher():
     msg = await bot.send_message(MAIN_CHANNEL, "<b>Starting RSS Batch Pipeline...</b>")
@@ -124,6 +145,7 @@ async def rss_watcher():
                     downloaded_links.add(entry.link)
                     asyncio.create_task(process_torrent(entry.link, msg))
         await asyncio.sleep(600)  # check RSS every 10 minutes
+
 
 async def start_pipeline():
     asyncio.create_task(rss_watcher())
