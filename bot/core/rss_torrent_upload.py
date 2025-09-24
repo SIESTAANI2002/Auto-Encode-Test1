@@ -55,6 +55,6 @@ async def process_queue():
         ffQueue.task_done()
 
 # -------------------- Start Tasks -------------------- #
-def start_tasks(loop):
+def start_task(loop):
     loop.create_task(fetch_rss())
     loop.create_task(process_queue())
