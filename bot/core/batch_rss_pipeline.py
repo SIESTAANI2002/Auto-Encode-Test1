@@ -1,19 +1,22 @@
 import os
 import asyncio
+import feedparser
 from re import findall
 from bot.core.tordownload import TorDownloader
-from bot.core.gdrive_uploader import upload_to_drive
 from bot.core.ffencoder import FFEncoder
-from bot.core.reporter import rep
+from bot.core.gdrive_uploader import upload_to_drive
 from bot import LOGS, bot
 from bot.core.func_utils import editMessage
 
 DOWNLOAD_DIR = "downloads"
 PROCESSED_DIR = "processed"
-UPDATE_INTERVAL = 10  # seconds
+UPDATE_INTERVAL = 10  # seconds for Telegram update
 RSS_FEEDS = os.environ.get("RSS_TOR", "").split()
 MAIN_CHANNEL = int(os.environ.get("MAIN_CHANNEL"))
 LOG_CHANNEL = int(os.environ.get("LOG_CHANNEL", MAIN_CHANNEL))
+
+# Track already downloaded torrents
+downloaded_links = set()
 
 def write_log(message):
     LOGS.info(message)
@@ -26,34 +29,6 @@ async def update_progress(msg, step_name, percent):
 """
     await editMessage(msg, text)
 
-async def fetch_and_download(feed_items, msg):
-    downloader = TorDownloader(DOWNLOAD_DIR)
-    downloaded_files = []
-    total_items = len(feed_items)
-
-    for idx, item in enumerate(feed_items, start=1):
-        filename = item['torrent_url'].split("/")[-1]
-        write_log(f"Start downloading {filename}")
-
-        # Start download in background
-        download_task = asyncio.create_task(downloader.download(item['torrent_url']))
-
-        # Fake progress updates until done (replace with real progress if available)
-        percent = 0
-        while not download_task.done():
-            await update_progress(msg, f"Downloading {idx}/{total_items}", percent)
-            percent = min(percent + 5, 50)
-            await asyncio.sleep(UPDATE_INTERVAL)
-
-        file_path = await download_task
-        if file_path:
-            downloaded_files.append(file_path)
-            write_log(f"Downloaded: {file_path}")
-            await update_progress(msg, f"Downloaded {idx}/{total_items}", 50)
-        else:
-            write_log(f"Download failed for {filename}")
-    return downloaded_files
-
 def rename_video_file(file_path):
     dir_name, filename = os.path.split(file_path)
     name, ext = os.path.splitext(filename)
@@ -63,7 +38,7 @@ def rename_video_file(file_path):
     write_log(f"Renamed {file_path} → {new_path}")
     return new_path
 
-async def encode_video(fpath, msg, idx, total_files, qual="720"):
+async def encode_video(fpath, msg, step_name, qual="720"):
     ffencoder = FFEncoder(message=None, path=os.path.dirname(fpath),
                           name=os.path.basename(fpath), qual=qual)
 
@@ -79,7 +54,7 @@ async def encode_video(fpath, msg, idx, total_files, qual="720"):
                         time_done = int(t[-1]) / 1000000
                         total_time = ffencoder._FFEncoder__total_time or 1.0
                         percent = 50 + int((time_done / total_time) * 50)
-                await update_progress(msg, f"Encoding {idx}/{total_files}", percent)
+                await update_progress(msg, step_name, percent)
             except:
                 pass
             await asyncio.sleep(UPDATE_INTERVAL)
@@ -88,49 +63,57 @@ async def encode_video(fpath, msg, idx, total_files, qual="720"):
     final_path = await ffencoder.start_encode()
     return final_path
 
-async def process_videos(file_paths, msg):
+async def process_torrent(torrent_url, msg):
+    downloader = TorDownloader(DOWNLOAD_DIR)
+    filename = torrent_url.split("/")[-1]
+    write_log(f"Start downloading {filename}")
+
+    # Start download
+    download_task = asyncio.create_task(downloader.download(torrent_url))
+
+    # Real-time download progress
+    while not download_task.done():
+        percent = int(downloader.current_progress * 50)  # 0–50% for download
+        await update_progress(msg, f"Downloading {filename}", percent)
+        await asyncio.sleep(UPDATE_INTERVAL)
+
+    file_path = await download_task
+    if not file_path:
+        write_log(f"Download failed: {filename}")
+        return
+
+    await update_progress(msg, f"Downloaded {filename}", 50)
+
+    # Rename
+    new_path = rename_video_file(file_path)
+
+    # Encode
+    final_path = await encode_video(new_path, msg, f"Encoding {filename}")
+
+    # Move to processed folder
     if not os.path.exists(PROCESSED_DIR):
         os.makedirs(PROCESSED_DIR)
+    proc_path = os.path.join(PROCESSED_DIR, os.path.basename(final_path))
+    os.rename(final_path, proc_path)
+    await update_progress(msg, f"Moved {filename}", 90)
+    write_log(f"Moved to processed folder: {proc_path}")
 
-    total_files = len(file_paths)
-    for idx, fpath in enumerate(file_paths, start=1):
-        try:
-            new_path = rename_video_file(fpath)
-            final_path = await encode_video(new_path, msg, idx, total_files)
-            proc_path = os.path.join(PROCESSED_DIR, os.path.basename(final_path))
-            os.rename(final_path, proc_path)
-            write_log(f"Moved to processed folder: {proc_path}")
-            await update_progress(msg, f"Moved {idx}/{total_files}", 90)
+    # Upload to Drive
+    drive_link = await upload_to_drive(proc_path)
+    await update_progress(msg, f"Uploaded {filename}", 100)
+    write_log(f"Uploaded to Drive: {drive_link}")
 
-            drive_link = await upload_to_drive(proc_path)
-            write_log(f"Uploaded to Drive: {drive_link}")
-            await update_progress(msg, f"Uploaded {idx}/{total_files}", 100)
-        except Exception as e:
-            write_log(f"Error processing {fpath}: {str(e)}")
-            await rep.report(str(e), "error")
-
-async def main_pipeline():
+async def rss_watcher():
     msg = await bot.send_message(MAIN_CHANNEL, "<b>Starting RSS Batch Pipeline...</b>")
 
-    for feed_url in RSS_FEEDS:
-        try:
-            write_log(f"Fetching RSS feed: {feed_url}")
-            await update_progress(msg, "Fetching RSS feed", 0)
-            import feedparser
-            feed_items = [{"torrent_url": e.link} for e in feedparser.parse(feed_url).entries]
-            if not feed_items:
-                write_log(f"No items found in feed: {feed_url}")
-                continue
-
-            downloaded_files = await fetch_and_download(feed_items, msg)
-            await process_videos(downloaded_files, msg)
-
-        except Exception as e:
-            write_log(f"Pipeline exception for feed {feed_url}: {str(e)}")
-            await rep.report(str(e), "error")
-
-    await update_progress(msg, "Pipeline Completed ✅", 100)
-    write_log("Batch RSS pipeline completed!")
+    while True:
+        for feed_url in RSS_FEEDS:
+            feed = feedparser.parse(feed_url)
+            for entry in feed.entries:
+                if entry.link not in downloaded_links:
+                    downloaded_links.add(entry.link)
+                    asyncio.create_task(process_torrent(entry.link, msg))
+        await asyncio.sleep(600)  # check RSS every 10 minutes
 
 async def start_pipeline():
-    asyncio.create_task(main_pipeline())
+    asyncio.create_task(rss_watcher())
