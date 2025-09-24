@@ -88,26 +88,24 @@ async def process_torrent(torrent_url, msg):
     filename = torrent_url.split("/")[-1]
     write_log(f"Start downloading {filename}")
 
-    # Start download with real-time progress
-    download_task = asyncio.create_task(helper.download_with_progress(torrent_url))
+    # Telegram: just show downloading file name
+    try:
+        await msg.edit_text(f"<b>Pipeline:</b>\n‣ Downloading: {filename}")
+    except Exception as e:
+        write_log(f"Telegram update failed: {str(e)}")
 
-    # Update Telegram progress based on helper.current_progress
-    while not download_task.done():
-        percent = int(helper.current_progress * 50)  # 0-50% for download
-        await update_progress(msg, f"Downloading {filename}", percent)
-        await asyncio.sleep(UPDATE_INTERVAL)
-
-    file_path = await download_task
+    # Download silently in background
+    file_path = await helper.download_with_progress(torrent_url)
     if not file_path:
         write_log(f"Download failed: {filename}")
         return
 
-    await update_progress(msg, f"Downloaded {filename}", 50)
+    write_log(f"Downloaded {filename}")
 
     # Rename
     new_path = rename_video_file(file_path)
 
-    # Encode 50-95%
+    # Encode (progress bar starts here)
     final_path = await encode_video(new_path, msg, f"Encoding {filename}")
 
     # Move to processed folder
@@ -118,7 +116,7 @@ async def process_torrent(torrent_url, msg):
     await update_progress(msg, f"Moved {filename}", 95)
     write_log(f"Moved to processed folder: {proc_path}")
 
-    # Upload to Drive (95–100%)
+    # Upload to Drive (progress bar 95–100%)
     drive_link = await upload_to_drive(proc_path)
     await update_progress(msg, f"Uploaded {filename}", 100)
     write_log(f"Uploaded to Drive: {drive_link}")
