@@ -1,146 +1,93 @@
 import os
-import re
-import subprocess
-import feedparser
-import logging
-import sys
+import asyncio
+from tordownload import TorDownloader
+from bot.core.gdrive_uploader import upload_to_drive
+from bot.core.ffencoder import FFEncoder
+from bot.core.reporter import rep
+from bot import LOGS
 
-# -------------------------------
-# Set up imports for repo structure
-# -------------------------------
-# bot/core/ contains tordownload.py and Gdrive_upload.py
-sys.path.append(os.path.abspath(os.path.dirname(__file__)))
-import tordownload
-import Gdrive_upload
+DOWNLOAD_DIR = "downloads"
+PROCESSED_DIR = "processed"
+VIDEO_EXTENSIONS = (".mkv", ".mp4", ".avi")
+RSS_FEEDS = [
+    "https://nyaa.si/?page=rss&q=Ember+batch&c=0_0&f=0"
+]
 
-# Repo root contains config.py
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
-from config import config  # Uses RSS_TOR, DOWNLOAD_PATH, DRIVE_FOLDER_ID
+# ---------------- Utility Functions ---------------- #
+def rename_video_file(file_path):
+    """Rename files using a standard pattern (customize as needed)."""
+    dir_name, filename = os.path.split(file_path)
+    name, ext = os.path.splitext(filename)
+    new_name = name.replace(".", " ").title() + ext
+    new_path = os.path.join(dir_name, new_name)
+    os.rename(file_path, new_path)
+    LOGS.info(f"Renamed {file_path} → {new_path}")
+    return new_path
 
-# -------------------------------
-# Logging setup
-# -------------------------------
-logging.basicConfig(
-    filename='batch_process.log',
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
+async def fetch_and_download(feed_items, download_dir):
+    """Download torrents from feed items using TorDownloader."""
+    downloader = TorDownloader(download_dir)
+    downloaded_files = []
+    for item in feed_items:
+        try:
+            file_path = await downloader.download(item['torrent_url'])
+            if file_path:
+                downloaded_files.append(file_path)
+                LOGS.info(f"Downloaded: {file_path}")
+            else:
+                LOGS.error(f"Download failed for {item['torrent_url']}")
+        except Exception as e:
+            LOGS.error(f"Exception during download: {str(e)}")
+            await rep.report(str(e), "error")
+    return downloaded_files
 
-def log(msg):
-    print(msg)
-    logging.info(msg)
+async def process_videos(file_paths, quality="720"):
+    """Rename, encode, and upload videos."""
+    if not os.path.exists(PROCESSED_DIR):
+        os.makedirs(PROCESSED_DIR)
 
-# -------------------------------
-# Scan batch folder for videos
-# -------------------------------
-def scan_batch_folder(folder_path, video_extensions=None):
-    if video_extensions is None:
-        video_extensions = ['.mkv', '.mp4', '.avi']
-    video_files = []
-    for root, _, files in os.walk(folder_path):
-        for f in files:
-            if any(f.lower().endswith(ext) for ext in video_extensions):
-                video_files.append(os.path.join(root, f))
-    return video_files
+    for fpath in file_paths:
+        try:
+            # 1️⃣ Rename
+            new_path = rename_video_file(fpath)
 
-# -------------------------------
-# Rename files: [EMBER] -> [AnimeToki]
-# -------------------------------
-def rename_file(original_path):
-    folder, filename = os.path.split(original_path)
-    match = re.match(r"\[(.*?)\]\s*(\d+)-\s*(.*)", filename)
-    if match:
-        _, episode, rest_name = match.groups()
-        new_tag = "AnimeToki"
-        new_filename = f"[{new_tag}] {episode} - {rest_name}"
-        new_path = os.path.join(folder, new_filename)
-        os.rename(original_path, new_path)
-        log(f"Renamed: {filename} → {new_filename}")
-        return new_path
-    return original_path
+            # 2️⃣ Encode / Metadata Update
+            ffencoder = FFEncoder(message=None, path=os.path.dirname(new_path),
+                                  name=os.path.basename(new_path), qual=quality)
+            final_path = await ffencoder.start_encode()
+            if not final_path:
+                LOGS.warning(f"Encoding cancelled or failed: {new_path}")
+                continue
+            LOGS.info(f"Encoding finished: {final_path}")
 
-def rename_files(file_list):
-    renamed_files = []
-    for f in file_list:
-        renamed_files.append(rename_file(f))
-    return renamed_files
+            # 3️⃣ Move to processed folder
+            proc_path = os.path.join(PROCESSED_DIR, os.path.basename(final_path))
+            os.rename(final_path, proc_path)
+            LOGS.info(f"Moved to processed folder: {proc_path}")
 
-# -------------------------------
-# Update metadata via FFmpeg
-# -------------------------------
-def update_metadata(file_path, title=None, show=None, season=None, episode=None):
-    cmd = ["ffmpeg", "-i", file_path, "-c", "copy"]
+            # 4️⃣ Upload to Google Drive
+            drive_link = await upload_to_drive(proc_path)
+            LOGS.info(f"Uploaded to Drive: {drive_link}")
 
-    if title:
-        cmd += ["-metadata", f"title={title}"]
-    if show:
-        cmd += ["-metadata", f"show={show}"]
-    if season:
-        cmd += ["-metadata", f"season_number={season}"]
-    if episode:
-        cmd += ["-metadata", f"episode_id={episode}"]
+        except Exception as e:
+            LOGS.error(f"Exception during processing: {str(e)}")
+            await rep.report(str(e), "error")
 
-    temp_file = file_path + ".tmp.mkv"
-    cmd.append(temp_file)
+# ---------------- Main Pipeline ---------------- #
+async def main():
+    for feed in RSS_FEEDS:
+        try:
+            LOGS.info(f"Fetching and downloading from RSS: {feed}")
+            # Dummy feed_items structure, replace with real RSS parser
+            feed_items = [{"torrent_url": feed}]  # Replace with actual URLs
+            downloaded_files = await fetch_and_download(feed_items, DOWNLOAD_DIR)
 
-    subprocess.run(cmd, shell=False)
-    os.replace(temp_file, file_path)
-    log(f"Updated metadata: {os.path.basename(file_path)}")
+            await process_videos(downloaded_files, quality="720")
+        except Exception as e:
+            LOGS.error(f"Pipeline exception for feed {feed}: {str(e)}")
+            await rep.report(str(e), "error")
 
-# -------------------------------
-# Fetch RSS and download using tordownload.py
-# -------------------------------
-def fetch_and_download_rss(rss_url, download_folder):
-    feed = feedparser.parse(rss_url)
-    os.makedirs(download_folder, exist_ok=True)
+    LOGS.info("Batch RSS pipeline completed!")
 
-    for entry in feed.entries:
-        video_url = entry.link
-        title = entry.title
-        filename = f"{title}.mkv"
-        file_path = os.path.join(download_folder, filename)
-
-        if os.path.exists(file_path):
-            log(f"Skipped (already exists): {filename}")
-            continue
-
-        log(f"Downloading: {filename}")
-        tordownload.download_video(video_url, file_path)
-        log(f"Downloaded: {filename}")
-
-# -------------------------------
-# Full RSS → Drive batch processing
-# -------------------------------
-def process_rss_to_drive():
-    rss_url = config["RSS_TOR"]                  # RSS feed from config
-    download_folder = config["DOWNLOAD_PATH"]   # Download folder from config
-    drive_folder_id = config.get("DRIVE_FOLDER_ID")  # Optional Drive folder ID
-
-    log("=== Starting batch process ===")
-    fetch_and_download_rss(rss_url, download_folder)
-
-    log("Scanning folder for videos...")
-    files = scan_batch_folder(download_folder)
-    log(f"Found {len(files)} files.")
-
-    log("Renaming files...")
-    files = rename_files(files)
-
-    log("Updating metadata...")
-    for f in files:
-        match = re.search(r"\[(.*?)\]\s*(\d+)\s*-\s*(.*)", os.path.basename(f))
-        if match:
-            _, ep_num, title = match.groups()
-            update_metadata(f, title=title, show="AnimeToki", season=1, episode=ep_num)
-
-    log("Uploading files to Google Drive...")
-    for f in files:
-        Gdrive_upload.upload_file(f, drive_folder_id)
-
-    log("=== Batch processing completed! ===")
-
-# -------------------------------
-# Run the process
-# -------------------------------
 if __name__ == "__main__":
-    process_rss_to_drive()
+    asyncio.run(main())
