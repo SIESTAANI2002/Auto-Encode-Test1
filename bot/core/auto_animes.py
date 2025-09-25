@@ -127,9 +127,9 @@ async def get_animes(name, torrent, force=False):
 
             # TokyoTosho upload
             try:
-                torrent_path = generate_torrent(out_path, name)  # helper creates .torrent file
-                await upload_to_tokyo(torrent_path, qual, name)
-                await rep.report(f"TokyoTosho Upload Success ({qual}): {name}", "info")
+                torrent_path = await generate_torrent(out_path, filename)  # helper creates .torrent file
+                await upload_to_tokyo(torrent_path, qual, filename)
+                await rep.report(f"TokyoTosho Upload Success ({qual}): {filename}", "info")
             except Exception as e:
                 await rep.report(f"TokyoTosho Upload Exception ({qual}): {e}", "error")
 
