@@ -6,7 +6,7 @@ from bot.core.reporter import rep
 API_KEY = "22969-5d89e40ea4e9dfffb056ad7dfcb6631bbcf9cdef"
 UPLOAD_URL = "https://www.tokyotosho.info/upload.php"
 
-async def upload_to_tokyotosho(torrent_file, title, episode=None, quality=None):
+async def upload_to_tokyo(torrent_file, title, episode=None, quality=None):
     """
     Upload a .torrent file to TokyoTosho automatically.
 
