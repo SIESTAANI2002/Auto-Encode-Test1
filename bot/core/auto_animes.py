@@ -8,7 +8,7 @@ from traceback import format_exc
 from bot import bot, bot_loop, Var, ani_cache, ffQueue, ffLock, ff_queued
 from .tordownload import TorDownloader
 from .database import db
-from .func_utils import getfeed, encode, editMessage, sendMessage, convertBytes
+from .func_utils import getfeed, encode, editMessage, sendMessage
 from .text_utils import TextEditor
 from .ffencoder import FFEncoder
 from .tguploader import TgUploader
@@ -81,43 +81,44 @@ async def get_animes(name, torrent, force=False):
 
         await ffLock.acquire()
 
+        # Process each quality sequentially
         for qual in Var.QUALS:
             filename = await aniInfo.get_upname(qual)
             await editMessage(stat_msg,
-                f"‣ <b>Anime Name :</b> <b><i>{name}</i></b>\n\n<i>Ready to Encode...</i>")
+                f"‣ <b>Anime Name :</b> <b><i>{name}</i></b>\n\n<i>Ready to Encode ({qual})...</i>")
             await asyncio.sleep(1.5)
             await rep.report(f"Starting Encode: {qual}...", "info")
 
             try:
                 out_path = await FFEncoder(stat_msg, dl, filename, qual).start_encode()
             except Exception as e:
-                await rep.report(f"Error: {e}, Cancelled, Retry Again!", "error")
+                await rep.report(f"Error during encode ({qual}): {e}", "error")
                 await stat_msg.delete()
                 ffLock.release()
                 return
 
-            await rep.report("Successfully Compressed. Uploading to Telegram...", "info")
+            await rep.report(f"Successfully Compressed ({qual}). Uploading to Telegram...", "info")
 
             try:
                 msg = await TgUploader(stat_msg).upload(out_path, qual)
             except Exception as e:
-                await rep.report(f"Telegram Upload Failed: {e}", "error")
+                await rep.report(f"Telegram Upload Failed ({qual}): {e}", "error")
                 await stat_msg.delete()
                 ffLock.release()
                 return
 
-            await rep.report("Telegram Upload Completed.", "info")
-
-            # Save to DB
-            await db.saveAnime(ani_id, ep_no, qual, post_id)
+            await rep.report(f"Telegram Upload Completed ({qual}). Generating torrent for TokyoTosho...", "info")
 
             # Generate torrent & upload to TokyoTosho
             try:
                 torrent_file = await generate_torrent(out_path, name)
                 response = await upload_to_tokyo(torrent_file, name, Var.TOKYO_API_KEY)
-                await rep.report(f"TokyoTosho Upload Response: {response}", "info")
+                await rep.report(f"TokyoTosho Upload Response ({qual}): {response}", "info")
             except Exception as e:
-                await rep.report(f"TokyoTosho Upload Failed: {e}", "error")
+                await rep.report(f"TokyoTosho Upload Failed ({qual}): {e}", "error")
+
+            # Save quality info to DB
+            await db.saveAnime(ani_id, ep_no, qual, post_id)
 
         ffLock.release()
         await stat_msg.delete()
