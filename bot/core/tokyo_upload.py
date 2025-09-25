@@ -1,69 +1,32 @@
-# bot/core/tokyo_upload.py
-import os
-import asyncio
-import traceback
-import torrentp  # make sure it's installed
 import aiohttp
-from bot import Var
-from bot.core.reporter import rep
+import asyncio
+from os import path as ospath
 
-async def generate_torrent(out_path: str, name: str):
+async def upload_to_tokyo(torrent_file: str, title: str, api_key: str):
     """
-    Generates a .torrent file from a folder or single file.
-    Handles v1 torrents for single files to avoid 'no file tree' error.
+    Upload a .torrent file to TokyoTosho using the API key.
+
+    Args:
+        torrent_file (str): Path to the .torrent file.
+        title (str): Torrent title.
+        api_key (str): TokyoTosho API key.
+
+    Returns:
+        dict: Response from TokyoTosho API.
     """
-    try:
-        # Check if path exists
-        if not os.path.exists(out_path):
-            await rep.report(f"TokyoTosho Upload Failed ({name}): Path does not exist", "error")
-            return None
+    if not ospath.exists(torrent_file):
+        raise FileNotFoundError(f"Torrent file not found: {torrent_file}")
 
-        # If single file, generate v1-only torrent
-        if os.path.isfile(out_path):
-            creator = torrentp.TorrentCreator(out_path)
-            creator.create(v1_only=True)
-            torrent_file = f"{out_path}.torrent"
-            creator.save(torrent_file)
-        else:
-            # Folder: generate normally (v2)
-            creator = torrentp.TorrentCreator(out_path)
-            creator.create()
-            torrent_file = f"{out_path}.torrent"
-            creator.save(torrent_file)
+    url = "https://tokyotosho.info/api/post"
+    data = aiohttp.FormData()
+    data.add_field("apikey", api_key)
+    data.add_field("title", title)
+    data.add_field("type", "anime")  # change type if needed
+    data.add_field("file", open(torrent_file, "rb"), filename=f"{title}.torrent", content_type="application/x-bittorrent")
 
-        return torrent_file
-    except Exception as e:
-        await rep.report(f"TokyoTosho Upload Failed ({name}): Failed to generate torrent for {out_path}: {e}", "error")
-        return None
-
-async def upload_tokyo_tosho(torrent_path: str, name: str):
-    """
-    Uploads a generated torrent to TokyoTosho automatically using API key.
-    """
-    if not torrent_path or not os.path.exists(torrent_path):
-        await rep.report(f"TokyoTosho Upload Failed ({name}): Torrent file missing", "error")
-        return
-
-    api_key = Var.TOKYO_API_KEY
-    url = "https://www.tokyotosho.info/api/add.php"
-
-    data = {
-        "apikey": api_key,
-        "type": "anime",  # adjust if needed
-        "name": name,
-        "comment": "Uploaded by AnimeToki | TG-@Ani_Animesh",
-        "url": "https://animetoki.com",  # optional, if you have a website
-    }
-
-    try:
-        async with aiohttp.ClientSession() as session:
-            with open(torrent_path, "rb") as f:
-                files = {"file": f}
-                async with session.post(url, data=data, files=files) as resp:
-                    text = await resp.text()
-                    if resp.status == 200:
-                        await rep.report(f"TokyoTosho Upload Success ({name})", "info")
-                    else:
-                        await rep.report(f"TokyoTosho Upload Failed ({name}): {text}", "error")
-    except Exception:
-        await rep.report(traceback.format_exc(), "error")
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, data=data) as resp:
+            if resp.status != 200:
+                text = await resp.text()
+                raise ValueError(f"TokyoTosho API returned status {resp.status}: {text}")
+            return await resp.json()
