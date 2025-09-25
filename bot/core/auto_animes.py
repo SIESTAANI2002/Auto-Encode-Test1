@@ -6,6 +6,7 @@ from os import path as ospath
 from aiofiles.os import remove as aioremove
 from traceback import format_exc
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+import re
 
 from bot import bot, bot_loop, Var, ani_cache, ffQueue, ffLock, ff_queued
 from .tordownload import TorDownloader
@@ -15,8 +16,6 @@ from .text_utils import TextEditor
 from .ffencoder import FFEncoder
 from .tguploader import TgUploader
 from .reporter import rep
-
-# TokyoTosho helpers
 from .tokyo_torrent import generate_torrent
 from .tokyo_upload import upload_to_tokyo
 
@@ -85,7 +84,6 @@ async def get_animes(name, torrent, force=False):
         await ffEvent.wait()
 
         await ffLock.acquire()
-        btns = []
 
         for qual in Var.QUALS:
             filename = await aniInfo.get_upname(qual)
@@ -105,6 +103,7 @@ async def get_animes(name, torrent, force=False):
             await editMessage(stat_msg, f"‣ <b>Anime Name :</b> <b><i>{filename}</i></b>\n\n<i>Ready to Upload...</i>")
             await asyncio.sleep(1.5)
 
+            # Upload to Telegram
             try:
                 msg = await TgUploader(stat_msg).upload(out_path, qual)
             except Exception as e:
@@ -117,34 +116,35 @@ async def get_animes(name, torrent, force=False):
             msg_id = msg.id
             link = f"https://telegram.me/{(await bot.get_me()).username}?start={await encode('get-'+str(msg_id * abs(Var.FILE_STORE)))}"
 
-            if post_msg:
-                btn_label = btn_formatter.get(qual, qual)  # Fixed KeyError
-                new_btn = InlineKeyboardButton(f"{btn_label} - {convertBytes(msg.document.file_size)}", url=link)
-                if len(btns) != 0 and len(btns[-1]) == 1:
-                    btns[-1].append(new_btn)
-                else:
-                    btns.append([new_btn])
-                await editMessage(post_msg, post_msg.caption.html if post_msg.caption else "", InlineKeyboardMarkup(btns))
-
+            # Save in DB
             await db.saveAnime(ani_id, ep_no, qual, post_id)
             bot_loop.create_task(extra_utils(msg_id, out_path))
 
-            # -------- TokyoTosho Upload after encoding ----------
+            # --- TokyoTosho upload ---
             try:
-                torrent_file = await generate_torrent(out_path, filename)
-                if torrent_file:
-                    success, msg = await upload_tokyo_tosho(
-                        name=f"{name} [{qual}]",
-                        torrent_file=torrent_file,
-                        api_key=Var.TOKYO_API_KEY
-                    )
-                    if success:
-                        await rep.report(f"TokyoTosho Upload Success ({qual}): {name}", "info")
-                    else:
-                        await rep.report(f"TokyoTosho Upload Failed ({qual}): {msg}", "error")
+                # Sanitize file path
+                safe_out_path = re.sub(r'[^\w\s\.-]', '_', out_path)
+                if not ospath.exists(safe_out_path):
+                    safe_out_path = out_path  # fallback if sanitization changes path
+
+                # Generate torrent
+                torrent_path = await generate_torrent(safe_out_path)
+
+                # Upload to TokyoTosho
+                result = await upload_to_tokyo(
+                    api_key=Var.TOKYO_API_KEY,
+                    torrent_file=torrent_path,
+                    title=name,
+                    description=f"{name} - {qual}",
+                    website="http://",
+                    comment="Uploaded via FZAutoAnimes bot"
+                )
+                if result:
+                    await rep.report(f"TokyoTosho Upload Success ({qual}): {name}", "info")
+                else:
+                    await rep.report(f"TokyoTosho Upload Failed ({qual}): {name}", "error")
             except Exception as e:
                 await rep.report(f"TokyoTosho Upload Exception ({qual}): {e}", "error")
-            # -----------------------------------------------------
 
         ffLock.release()
         await stat_msg.delete()
