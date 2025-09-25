@@ -1,6 +1,7 @@
 # bot/core/auto_animes.py
 import asyncio
 from asyncio import Event
+from asyncio.subprocess import PIPE
 from os import path as ospath
 from aiofiles.os import remove as aioremove
 from traceback import format_exc
@@ -14,10 +15,6 @@ from .text_utils import TextEditor
 from .ffencoder import FFEncoder
 from .tguploader import TgUploader
 from .reporter import rep
-
-# TokyoTosho helpers
-from .tokyo_torrent import generate_torrent
-from .tokyo_upload import upload_to_tokyo
 
 btn_formatter = {
     '1080': '1080p',
@@ -84,6 +81,7 @@ async def get_animes(name, torrent, force=False):
         await ffEvent.wait()
 
         await ffLock.acquire()
+        btns = []
 
         for qual in Var.QUALS:
             filename = await aniInfo.get_upname(qual)
@@ -111,19 +109,20 @@ async def get_animes(name, torrent, force=False):
                 ffLock.release()
                 return
 
-            await rep.report("Successfully Uploaded File into Telegram...", "info")
+            await rep.report("Successfully Uploaded File into Tg...", "info")
             msg_id = msg.id
+            link = f"https://telegram.me/{(await bot.get_me()).username}?start={await encode('get-'+str(msg_id * abs(Var.FILE_STORE)))}"
+
+            if post_msg:
+                btn_label = btn_formatter.get(qual, qual)  # Fixed KeyError
+                new_btn = InlineKeyboardButton(f"{btn_label} - {convertBytes(msg.document.file_size)}", url=link)
+                if len(btns) != 0 and len(btns[-1]) == 1:
+                    btns[-1].append(new_btn)
+                else:
+                    btns.append([new_btn])
+                await editMessage(post_msg, post_msg.caption.html if post_msg.caption else "", InlineKeyboardMarkup(btns))
+
             await db.saveAnime(ani_id, ep_no, qual, post_id)
-
-            # ✅ TokyoTosho Upload (Torrent generation + API)
-            try:
-                await rep.report(f"Generating torrent for {filename}...", "info")
-                torrent_file = await generate_torrent(out_path, name)
-                await upload_to_tokyo(torrent_file, name, Var.TOKYO_API_KEY)
-                await rep.report(f"✅ Uploaded {filename} to TokyoTosho", "info")
-            except Exception as e:
-                await rep.report(f"TokyoTosho Upload Failed: {e}", "error")
-
             bot_loop.create_task(extra_utils(msg_id, out_path))
 
         ffLock.release()
