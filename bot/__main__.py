@@ -1,5 +1,3 @@
-import asyncio
-from bot.core.batch_rss_pipeline import start_pipeline
 from asyncio import create_task, create_subprocess_exec, create_subprocess_shell, run as asyrun, all_tasks, gather, sleep as asleep
 from aiofiles import open as aiopen
 from pyrogram import idle
@@ -64,7 +62,6 @@ async def main():
     LOGS.info('Auto Anime Bot Started!')
     sch.start()
     bot_loop.create_task(queue_loop())
-    asyncio.create_task(start_pipeline())
     await fetch_animes()
     await idle()
     LOGS.info('Auto Anime Bot Stopped!')
