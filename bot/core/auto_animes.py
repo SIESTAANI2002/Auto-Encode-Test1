@@ -125,11 +125,14 @@ async def get_animes(name, torrent, force=False):
                     btns.append([new_btn])
                 await editMessage(post_msg, post_msg.caption.html if post_msg.caption else "", InlineKeyboardMarkup(btns))
 
-            # TokyoTosho upload
+            # TokyoTosho Upload
             try:
-                torrent_path = await generate_torrent(out_path, filename)  # helper creates .torrent file
-                await upload_to_tokyo(torrent_path, qual, filename)
-                await rep.report(f"TokyoTosho Upload Success ({qual}): {filename}", "info")
+                if ospath.exists(out_path):
+                    torrent_path = await generate_torrent(out_path, filename)
+                    await upload_to_tokyo(torrent_path, qual, filename)
+                    await rep.report(f"TokyoTosho Upload Done ({qual}) for {filename}", "info")
+                else:
+                    await rep.report(f"❌ File does not exist for TokyoTosho Upload ({qual}): {out_path}", "error")
             except Exception as e:
                 await rep.report(f"TokyoTosho Upload Exception ({qual}): {e}", "error")
 
