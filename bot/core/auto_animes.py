@@ -16,6 +16,10 @@ from .ffencoder import FFEncoder
 from .tguploader import TgUploader
 from .reporter import rep
 
+# TokyoTosho helpers
+from .tokyo_torrent import generate_torrent
+from .tokyo_upload import upload_tokyo_tosho
+
 btn_formatter = {
     '1080': '1080p',
     '720': '𝟳𝟮𝟬𝗽'
@@ -124,6 +128,23 @@ async def get_animes(name, torrent, force=False):
 
             await db.saveAnime(ani_id, ep_no, qual, post_id)
             bot_loop.create_task(extra_utils(msg_id, out_path))
+
+            # -------- TokyoTosho Upload after encoding ----------
+            try:
+                torrent_file = await generate_torrent(out_path, filename)
+                if torrent_file:
+                    success, msg = await upload_tokyo_tosho(
+                        name=f"{name} [{qual}]",
+                        torrent_file=torrent_file,
+                        api_key=Var.TOKYO_API_KEY
+                    )
+                    if success:
+                        await rep.report(f"TokyoTosho Upload Success ({qual}): {name}", "info")
+                    else:
+                        await rep.report(f"TokyoTosho Upload Failed ({qual}): {msg}", "error")
+            except Exception as e:
+                await rep.report(f"TokyoTosho Upload Exception ({qual}): {e}", "error")
+            # -----------------------------------------------------
 
         ffLock.release()
         await stat_msg.delete()
