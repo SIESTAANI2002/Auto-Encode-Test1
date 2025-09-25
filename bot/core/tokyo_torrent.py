@@ -1,25 +1,34 @@
-# bot/core/tokyo_torrent.py
-import os
 import libtorrent as lt
 import asyncio
+from os import path as ospath
 
-async def generate_torrent(file_path, anime_name):
+async def generate_torrent(file_path: str, name: str, announce_url: str = "http://tracker.tokyotosho.info:2710/announce") -> str:
     """
-    Generates a .torrent file for the given file.
-    Returns the path to the .torrent file.
+    Generates a .torrent file from a given file or folder path.
+
+    Args:
+        file_path (str): Path to the file or folder to be turned into a torrent.
+        name (str): Name for the torrent file.
+        announce_url (str): Tracker announce URL for TokyoTosho.
+
+    Returns:
+        str: Path to the generated .torrent file.
     """
-    try:
-        fs = lt.file_storage()
-        lt.add_files(fs, file_path)
-        t = lt.create_torrent(fs)
-        t.add_tracker("http://tracker.opentrackr.org:1337/announce")
-        t.set_creator("AnimeBot")
+    if not ospath.exists(file_path):
+        raise FileNotFoundError(f"Path does not exist: {file_path}")
 
-        torrent_data = t.generate()
-        torrent_file = os.path.splitext(file_path)[0] + ".torrent"
-        with open(torrent_file, "wb") as f:
-            f.write(lt.bencode(torrent_data))
+    fs = lt.file_storage()
+    lt.add_files(fs, file_path)
+    if fs.num_files() == 0:
+        raise ValueError("No files found in path to generate torrent")
 
-        return torrent_file
-    except Exception as e:
-        raise RuntimeError(f"Failed to generate torrent for {anime_name}: {e}")
+    t = lt.create_torrent(fs)
+    t.add_tracker(announce_url)
+    t.set_creator("FZAutoAnimes Bot")
+
+    torrent_path = f"{file_path}.torrent"
+    torrent_data = t.generate()
+    with open(torrent_path, "wb") as f:
+        f.write(lt.bencode(torrent_data))
+
+    return torrent_path
