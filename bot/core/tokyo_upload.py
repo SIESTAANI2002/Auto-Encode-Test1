@@ -1,38 +1,69 @@
 # bot/core/tokyo_upload.py
+import os
+import asyncio
+import traceback
+import torrentp  # make sure it's installed
 import aiohttp
-from bot import Var, bot_loop
+from bot import Var
 from bot.core.reporter import rep
 
-API_KEY = "22969-5d89e40ea4e9dfffb056ad7dfcb6631bbcf9cdef"
-UPLOAD_URL = "https://www.tokyotosho.info/upload.php"
-
-async def upload_to_tokyo(torrent_file, title, episode=None, quality=None):
+async def generate_torrent(out_path: str, name: str):
     """
-    Upload a .torrent file to TokyoTosho automatically.
-
-    Args:
-        torrent_file (str): Path to the .torrent file.
-        title (str): Anime title.
-        episode (int, optional): Episode number.
-        quality (str, optional): Quality like 1080p.
+    Generates a .torrent file from a folder or single file.
+    Handles v1 torrents for single files to avoid 'no file tree' error.
     """
     try:
-        data = {
-            "api_key": API_KEY,
-            "type": "Anime",  # adjust type if needed
-            "title": f"{title} - E{episode} [{quality}]" if episode else f"{title} [{quality}]",
-            "bit_torrent_url": "",  # optional: if torrent hosted online
-            "comment": "Uploaded via Anime Bot",
-        }
+        # Check if path exists
+        if not os.path.exists(out_path):
+            await rep.report(f"TokyoTosho Upload Failed ({name}): Path does not exist", "error")
+            return None
 
-        files = {"torrent": open(torrent_file, "rb")}
+        # If single file, generate v1-only torrent
+        if os.path.isfile(out_path):
+            creator = torrentp.TorrentCreator(out_path)
+            creator.create(v1_only=True)
+            torrent_file = f"{out_path}.torrent"
+            creator.save(torrent_file)
+        else:
+            # Folder: generate normally (v2)
+            creator = torrentp.TorrentCreator(out_path)
+            creator.create()
+            torrent_file = f"{out_path}.torrent"
+            creator.save(torrent_file)
 
-        async with aiohttp.ClientSession() as session:
-            async with session.post(UPLOAD_URL, data=data, files=files) as resp:
-                if resp.status == 200:
-                    await rep.report(f"✅ TokyoTosho Upload Success: {title} E{episode} [{quality}]", "info")
-                else:
-                    text = await resp.text()
-                    await rep.report(f"❌ TokyoTosho Upload Failed: {title} E{episode} [{quality}] | Status: {resp.status} | {text}", "error")
+        return torrent_file
     except Exception as e:
-        await rep.report(f"❌ TokyoTosho Upload Exception: {e}", "error")
+        await rep.report(f"TokyoTosho Upload Failed ({name}): Failed to generate torrent for {out_path}: {e}", "error")
+        return None
+
+async def upload_tokyo_tosho(torrent_path: str, name: str):
+    """
+    Uploads a generated torrent to TokyoTosho automatically using API key.
+    """
+    if not torrent_path or not os.path.exists(torrent_path):
+        await rep.report(f"TokyoTosho Upload Failed ({name}): Torrent file missing", "error")
+        return
+
+    api_key = Var.TOKYO_API_KEY
+    url = "https://www.tokyotosho.info/api/add.php"
+
+    data = {
+        "apikey": api_key,
+        "type": "anime",  # adjust if needed
+        "name": name,
+        "comment": "Uploaded by AnimeToki | TG-@Ani_Animesh",
+        "url": "https://animetoki.com",  # optional, if you have a website
+    }
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            with open(torrent_path, "rb") as f:
+                files = {"file": f}
+                async with session.post(url, data=data, files=files) as resp:
+                    text = await resp.text()
+                    if resp.status == 200:
+                        await rep.report(f"TokyoTosho Upload Success ({name})", "info")
+                    else:
+                        await rep.report(f"TokyoTosho Upload Failed ({name}): {text}", "error")
+    except Exception:
+        await rep.report(traceback.format_exc(), "error")
