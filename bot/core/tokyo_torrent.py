@@ -2,37 +2,24 @@
 import os
 import libtorrent as lt
 import asyncio
-from bot.core.reporter import rep
 
-async def generate_torrent(file_path, tracker_url="udp://tracker.openbittorrent.com:80/announce"):
+async def generate_torrent(file_path, anime_name):
     """
-    Generate a .torrent file for a given video file.
-
-    Args:
-        file_path (str): Path to the video file.
-        tracker_url (str, optional): Tracker URL. Default is public tracker.
-    
-    Returns:
-        str: Path to the generated .torrent file.
+    Generates a .torrent file for the given file.
+    Returns the path to the .torrent file.
     """
     try:
-        file_name = os.path.basename(file_path)
-        torrent_name = f"{file_path}.torrent"
-
         fs = lt.file_storage()
         lt.add_files(fs, file_path)
         t = lt.create_torrent(fs)
-        t.add_tracker(tracker_url)
-        t.set_creator("AnimeBot TokyoTosho Upload")
+        t.add_tracker("http://tracker.opentrackr.org:1337/announce")
+        t.set_creator("AnimeBot")
 
-        lt.set_piece_hashes(t, os.path.dirname(file_path))
-        torrent = t.generate()
+        torrent_data = t.generate()
+        torrent_file = os.path.splitext(file_path)[0] + ".torrent"
+        with open(torrent_file, "wb") as f:
+            f.write(lt.bencode(torrent_data))
 
-        with open(torrent_name, "wb") as f:
-            f.write(lt.bencode(torrent))
-
-        await rep.report(f"✅ Torrent Generated: {file_name}", "info")
-        return torrent_name
+        return torrent_file
     except Exception as e:
-        await rep.report(f"❌ Torrent Generation Failed: {e}", "error")
-        return None
+        raise RuntimeError(f"Failed to generate torrent for {anime_name}: {e}")
