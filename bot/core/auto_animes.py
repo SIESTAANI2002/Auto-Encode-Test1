@@ -18,7 +18,7 @@ from .reporter import rep
 
 # TokyoTosho helpers
 from .tokyo_torrent import generate_torrent
-from .tokyo_upload import upload_tokyo_tosho
+from .tokyo_upload import upload_to_tokyo
 
 btn_formatter = {
     '1080': '1080p',
