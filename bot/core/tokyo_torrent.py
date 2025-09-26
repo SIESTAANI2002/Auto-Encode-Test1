@@ -1,34 +1,42 @@
-# bot/core/tokyo_torrent.py
 import libtorrent as lt
 import os
-from os import path as ospath
+from hashlib import sha1
+from bot import LOGS
 
-async def generate_torrent(file_path: str, name: str, announce_list=None, piece_size=0):
-    """
-    Generate a .torrent file from the given file_path.
-    Returns the path of the generated torrent.
-    """
-    if not ospath.exists(file_path):
-        raise FileNotFoundError(f"File does not exist: {file_path}")
+async def create_torrent_file(filepath, torrent_path):
+    """Generate a .torrent file for the given file"""
+    if not os.path.exists(filepath):
+        LOGS.error(f"[TokyoTosho] File not found for torrent: {filepath}")
+        return None
 
-    # Create a file storage and add files
-    fs = lt.file_storage()
-    lt.add_files(fs, file_path)
+    try:
+        fs = lt.file_storage()
+        lt.add_files(fs, filepath)
+        t = lt.create_torrent(fs)
 
-    # Create the torrent
-    ct = lt.create_torrent(fs, piece_size=piece_size)
-    if announce_list:
-        for tier in announce_list:
-            ct.add_tracker(tier)
+        # Optional: piece size (auto if not set)
+        t.set_creator("AnimeToki Bot")
+        t.set_comment("Uploaded via bot")
 
-    # Calculate piece hashes automatically
-    lt.set_piece_hashes(ct, os.path.dirname(file_path))
+        # Add trackers (TokyoTosho requires at least one tracker)
+        trackers = [
+            "udp://tracker.opentrackr.org:1337/announce",
+            "udp://tracker.openbittorrent.com:6969/announce"
+        ]
+        for tr in trackers:
+            t.add_tracker(tr)
 
-    # Generate torrent filename
-    torrent_name = f"{name}.torrent"
-    torrent_path = ospath.join("encode", torrent_name)
+        # Hash pieces
+        lt.set_piece_hashes(t, os.path.dirname(filepath))
 
-    with open(torrent_path, "wb") as f:
-        f.write(lt.bencode(ct.generate()))
+        # Save torrent
+        torrent_data = lt.bencode(t.generate())
+        with open(torrent_path, "wb") as f:
+            f.write(torrent_data)
 
-    return torrent_path
+        LOGS.info(f"[TokyoTosho] Torrent created: {torrent_path}")
+        return torrent_path
+
+    except Exception as e:
+        LOGS.error(f"[TokyoTosho] Torrent generation failed: {str(e)}")
+        return None
