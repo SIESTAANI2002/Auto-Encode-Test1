@@ -13,8 +13,9 @@ from .func_utils import getfeed, encode, editMessage, sendMessage, convertBytes
 from .text_utils import TextEditor
 from .ffencoder import FFEncoder
 from .tguploader import TgUploader
-from .tokyo_upload import upload_to_tokyo
 from .reporter import rep
+from .tokyo_torrent import generate_torrent
+from .tokyo_upload import upload_to_tokyo
 
 btn_formatter = {
     '1080': '1080p',
@@ -71,7 +72,6 @@ async def get_animes(name, torrent, force=False):
             await stat_msg.delete()
             return
 
-        original_dl_path = dl  # Keep original downloaded file
         post_id = post_msg.id
         ffEvent = Event()
         ff_queued[post_id] = ffEvent
@@ -80,6 +80,7 @@ async def get_animes(name, torrent, force=False):
             await rep.report("Added Task to Queue...", "info")
         await ffQueue.put(post_id)
         await ffEvent.wait()
+
         await ffLock.acquire()
         btns = []
 
@@ -90,7 +91,6 @@ async def get_animes(name, torrent, force=False):
             await rep.report(f"Starting Encode ({qual})...", "info")
 
             try:
-                # Encode file
                 out_path = await FFEncoder(stat_msg, dl, filename, qual).start_encode()
             except Exception as e:
                 await rep.report(f"Error: {e}, Cancelled, Retry Again!", "error")
@@ -98,41 +98,52 @@ async def get_animes(name, torrent, force=False):
                 ffLock.release()
                 return
 
-            await rep.report(f"Successfully Compressed ({qual}). Now Going To Upload...", "info")
+            await rep.report(f"✅ Successfully Compressed ({qual}). Uploading...", "info")
             await editMessage(stat_msg, f"‣ <b>Anime Name :</b> <b><i>{filename}</i></b>\n\n<i>Ready to Upload...</i>")
             await asyncio.sleep(1.5)
 
             try:
-                # Upload encoded file
                 msg = await TgUploader(stat_msg).upload(out_path, qual)
-                await upload_to_tokyo(out_path, name, qual)
             except Exception as e:
-                await rep.report(f"TokyoTosho Upload Exception ({qual}): {e}", "error")
+                await rep.report(f"Error: {e}, Cancelled, Retry Again!", "error")
+                await stat_msg.delete()
+                ffLock.release()
+                return
 
-            # Add TG buttons
+            await rep.report(f"✅ Successfully Uploaded {qual} File to Tg...", "info")
+            msg_id = msg.id
+            link = f"https://telegram.me/{(await bot.get_me()).username}?start={await encode('get-'+str(msg_id * abs(Var.FILE_STORE)))}"
+
+            # Telegram buttons
             if post_msg:
                 btn_label = btn_formatter.get(qual, qual)
-                new_btn = InlineKeyboardButton(f"{btn_label} - {convertBytes(msg.document.file_size)}",
-                                               url=f"https://telegram.me/{(await bot.get_me()).username}?start={await encode('get-'+str(msg.id * abs(Var.FILE_STORE)))}")
+                new_btn = InlineKeyboardButton(f"{btn_label} - {convertBytes(msg.document.file_size)}", url=link)
                 if len(btns) != 0 and len(btns[-1]) == 1:
                     btns[-1].append(new_btn)
                 else:
                     btns.append([new_btn])
                 await editMessage(post_msg, post_msg.caption.html if post_msg.caption else "", InlineKeyboardMarkup(btns))
 
-            # Remove encoded file to free space
-            if ospath.exists(out_path):
-                await aioremove(out_path)
-
+            # Save in DB
             await db.saveAnime(ani_id, ep_no, qual, post_id)
-            bot_loop.create_task(extra_utils(msg.id, out_path))
 
-        # Delete original downloaded file after all qualities processed
-        if ospath.exists(original_dl_path):
-            await aioremove(original_dl_path)
+            # TokyoTosho upload
+            try:
+                torrent_path = await generate_torrent(out_path, filename)
+                await upload_to_tokyo(torrent_path, filename, qual)
+            except Exception as e:
+                await rep.report(f"[ERROR] TokyoTosho Upload ({qual}): {e}", "error")
+
+            # Extra utils
+            bot_loop.create_task(extra_utils(msg_id, out_path))
 
         ffLock.release()
         await stat_msg.delete()
+
+        # Cleanup original file after all qualities
+        if ospath.exists(dl):
+            await aioremove(dl)
+
         ani_cache.setdefault('completed', set()).add(ani_id)
 
     except Exception:
