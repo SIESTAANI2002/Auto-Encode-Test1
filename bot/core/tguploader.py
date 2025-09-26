@@ -2,7 +2,6 @@ from time import time, sleep
 from traceback import format_exc
 from math import floor
 from os import path as ospath
-from aiofiles.os import remove as aioremove
 from pyrogram.errors import FloodWait
 
 from bot import bot, Var
@@ -62,9 +61,7 @@ class TgUploader:
         except Exception as e:
             await rep.report(format_exc(), "error")
             raise e
-        finally:
-            if ospath.exists(path):
-                await aioremove(path)
+        # ❌ Removed file deletion here (TokyoTosho still needs it!)
 
     async def progress_status(self, current, total):
         if self.cancelled:
