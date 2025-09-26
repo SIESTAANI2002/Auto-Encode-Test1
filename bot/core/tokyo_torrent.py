@@ -3,7 +3,7 @@ import os
 from hashlib import sha1
 from bot import LOGS
 
-async def create_torrent_file(filepath, torrent_path):
+async def generate_torrent(filepath, torrent_path):
     """Generate a .torrent file for the given file"""
     if not os.path.exists(filepath):
         LOGS.error(f"[TokyoTosho] File not found for torrent: {filepath}")
