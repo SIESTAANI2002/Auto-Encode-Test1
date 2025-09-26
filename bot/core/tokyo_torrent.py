@@ -1,52 +1,44 @@
 # bot/core/tokyo_torrent.py
-import os
 import libtorrent as lt
-from pathlib import Path
+import os
+from os import path as ospath
 from datetime import datetime
 
-TORRENT_DIR = "torrents"
-
-# Ensure torrents directory exists
-os.makedirs(TORRENT_DIR, exist_ok=True)
-
-async def generate_torrent(file_path: str, name: str) -> str:
+async def generate_torrent(file_path: str, name: str, announce_list=None, piece_size=0):
     """
-    Generate a v1 torrent file for TokyoTosho upload.
-    
-    Args:
-        file_path (str): Path to the encoded file.
-        name (str): Name to use for the torrent.
-    
-    Returns:
-        str: Path to the generated .torrent file.
+    Generate a .torrent file from the given file_path.
+    Returns the path of the generated torrent.
     """
-    path_obj = Path(file_path)
-    
-    if not path_obj.exists():
+    if not ospath.exists(file_path):
         raise FileNotFoundError(f"File does not exist: {file_path}")
-    
-    fs = lt.file_storage()
-    
-    if path_obj.is_file():
-        lt.add_files(fs, str(path_obj))
-        base_path = path_obj.parent
-    else:
-        lt.add_files(fs, str(path_obj))
-        base_path = path_obj
 
-    t = lt.create_torrent(fs)
-    
-    # Set piece size automatically (optional)
-    t.set_creator("FZAutoAnimes Bot")
-    
-    # Include modification time
-    for i in range(fs.num_files()):
-        t.set_file_hash(i, lt.sha1_hash())
-    
-    torrent_file_name = f"{name}.torrent"
-    torrent_path = os.path.join(TORRENT_DIR, torrent_file_name)
-    
+    # Create a file storage
+    fs = lt.file_storage()
+    lt.add_files(fs, file_path)
+
+    # Create the torrent
+    ct = lt.create_torrent(fs, piece_size=piece_size)
+    if announce_list:
+        for tier in announce_list:
+            ct.add_tracker(tier)
+
+    # Calculate piece hashes
+    lt.set_piece_hashes(ct, os.path.dirname(file_path))
+
+    # Convert file hashes to proper types
+    for idx in range(fs.num_files()):
+        f = fs.file_path(idx)
+        # Already hashed in set_piece_hashes, no need to call set_file_hash manually
+        # Just ensure idx type is correct if needed:
+        idx_obj = lt.file_index(idx)
+        # This line can be skipped as set_piece_hashes handles it:
+        # ct.set_file_hash(idx_obj, lt.sha1_hash(...))  
+
+    # Generate torrent filename
+    torrent_name = f"{name}.torrent"
+    torrent_path = ospath.join("encode", torrent_name)
+
     with open(torrent_path, "wb") as f:
-        f.write(lt.bencode(t.generate()))
-    
+        f.write(lt.bencode(ct.generate()))
+
     return torrent_path
