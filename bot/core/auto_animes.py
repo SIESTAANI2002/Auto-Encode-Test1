@@ -1,6 +1,7 @@
 # bot/core/auto_animes.py
 import asyncio
 from asyncio import Event
+from asyncio.subprocess import PIPE
 from os import path as ospath
 from aiofiles.os import remove as aioremove
 from traceback import format_exc
@@ -45,7 +46,6 @@ async def get_animes(name, torrent, force=False):
         if not force and ani_id in ani_cache.get('completed', set()):
             return
 
-        # Check DB if quality already uploaded
         ani_data = await db.getAnime(ani_id)
         qual_data = ani_data.get(ep_no) if ani_data else None
         if not force and qual_data and all(qual_data.get(q) for q in Var.QUALS):
@@ -65,7 +65,10 @@ async def get_animes(name, torrent, force=False):
         )
 
         await asyncio.sleep(1.5)
-        stat_msg = await sendMessage(Var.MAIN_CHANNEL, f"‣ <b>Anime Name :</b> <b><i>{name}</i></b>\n\n<i>Downloading...</i>")
+        stat_msg = await sendMessage(
+            Var.MAIN_CHANNEL,
+            f"‣ <b>Anime Name :</b> <b><i>{name}</i></b>\n\n<i>Downloading...</i>"
+        )
         dl = await TorDownloader("./downloads").download(torrent, name)
         if not dl or not ospath.exists(dl):
             await rep.report(f"File Download Incomplete, Try Again", "error")
@@ -76,7 +79,10 @@ async def get_animes(name, torrent, force=False):
         ffEvent = Event()
         ff_queued[post_id] = ffEvent
         if ffLock.locked():
-            await editMessage(stat_msg, f"‣ <b>Anime Name :</b> <b><i>{name}</i></b>\n\n<i>Queued to Encode...</i>")
+            await editMessage(
+                stat_msg,
+                f"‣ <b>Anime Name :</b> <b><i>{name}</i></b>\n\n<i>Queued to Encode...</i>"
+            )
             await rep.report("Added Task to Queue...", "info")
         await ffQueue.put(post_id)
         await ffEvent.wait()
@@ -86,9 +92,12 @@ async def get_animes(name, torrent, force=False):
 
         for qual in Var.QUALS:
             filename = await aniInfo.get_upname(qual)
-            await editMessage(stat_msg, f"‣ <b>Anime Name :</b> <b><i>{name}</i></b>\n\n<i>Ready to Encode...</i>")
+            await editMessage(
+                stat_msg,
+                f"‣ <b>Anime Name :</b> <b><i>{name}</i></b>\n\n<i>Ready to Encode...</i>"
+            )
             await asyncio.sleep(1.5)
-            await rep.report(f"Starting Encode {qual}...", "info")
+            await rep.report("Starting Encode...", "info")
 
             try:
                 out_path = await FFEncoder(stat_msg, dl, filename, qual).start_encode()
@@ -98,11 +107,13 @@ async def get_animes(name, torrent, force=False):
                 ffLock.release()
                 return
 
-            await rep.report(f"Successfully Compressed {qual}. Now Going To Upload...", "info")
-            await editMessage(stat_msg, f"‣ <b>Anime Name :</b> <b><i>{filename}</i></b>\n\n<i>Ready to Upload...</i>")
+            await rep.report("Successfully Compressed. Now Going To Upload...", "info")
+            await editMessage(
+                stat_msg,
+                f"‣ <b>Anime Name :</b> <b><i>{filename}</i></b>\n\n<i>Ready to Upload...</i>"
+            )
             await asyncio.sleep(1.5)
 
-            # Telegram upload
             try:
                 msg = await TgUploader(stat_msg).upload(out_path, qual)
             except Exception as e:
@@ -115,35 +126,35 @@ async def get_animes(name, torrent, force=False):
             msg_id = msg.id
             link = f"https://telegram.me/{(await bot.get_me()).username}?start={await encode('get-'+str(msg_id * abs(Var.FILE_STORE)))}"
 
-            # Buttons for Telegram post
             if post_msg:
                 btn_label = btn_formatter.get(qual, qual)
-                new_btn = InlineKeyboardButton(f"{btn_label} - {convertBytes(msg.document.file_size)}", url=link)
+                new_btn = InlineKeyboardButton(
+                    f"{btn_label} - {convertBytes(msg.document.file_size)}", url=link
+                )
                 if len(btns) != 0 and len(btns[-1]) == 1:
                     btns[-1].append(new_btn)
                 else:
                     btns.append([new_btn])
-                await editMessage(post_msg, post_msg.caption.html if post_msg.caption else "", InlineKeyboardMarkup(btns))
+                await editMessage(
+                    post_msg,
+                    post_msg.caption.html if post_msg.caption else "",
+                    InlineKeyboardMarkup(btns)
+                )
 
-            # Upload to TokyoTosho
+            # TokyoTosho upload step
             try:
-                # Wait max 10s for file to exist
-                for _ in range(10):
-                    if ospath.exists(out_path):
-                        break
-                    await asyncio.sleep(1)
+                if ospath.exists(out_path):
+                    torrent_path = await generate_torrent(out_path, filename)
+                    await upload_to_tokyo(torrent_path, qual, filename)
+                    await rep.report(f"✅ TokyoTosho Upload Done ({qual}) for {filename}", "info")
                 else:
                     await rep.report(f"❌ File does not exist for TokyoTosho Upload ({qual}): {out_path}", "error")
-                    continue
-
-                torrent_path = await generate_torrent(out_path, filename)
-                await upload_to_tokyo(torrent_path, qual, filename)
-                await rep.report(f"✅ TokyoTosho Upload Done ({qual}) for {filename}", "info")
             except Exception as e:
                 await rep.report(f"TokyoTosho Upload Exception ({qual}): {e}", "error")
 
+            # Only cleanup AFTER TokyoTosho
             await db.saveAnime(ani_id, ep_no, qual, post_id)
-            bot_loop.create_task(extra_utils(msg_id, out_path))
+            await extra_utils(msg_id, out_path)
 
         ffLock.release()
         await stat_msg.delete()
@@ -152,7 +163,6 @@ async def get_animes(name, torrent, force=False):
 
     except Exception:
         await rep.report(format_exc(), "error")
-
 
 async def extra_utils(msg_id, out_path):
     try:
