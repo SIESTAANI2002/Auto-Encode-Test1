@@ -1,41 +1,42 @@
-# bot/core/tokyo_torrent.py
 import libtorrent as lt
-from os import path as ospath
-from datetime import datetime
-from pathlib import Path
+import os
+from hashlib import sha1
+from bot import LOGS
 
-async def generate_torrent(file_path: str, name: str = None, tracker: str = "udp://tracker.opentrackr.org:1337/announce") -> str:
-    """
-    Generate a .torrent file from a given file path.
+async def generate_torrent(filepath, torrent_path):
+    """Generate a .torrent file for the given file"""
+    if not os.path.exists(filepath):
+        LOGS.error(f"[TokyoTosho] File not found for torrent: {filepath}")
+        return None
 
-    Args:
-        file_path (str): Path to the encoded file.
-        name (str, optional): Custom name for the torrent file. Defaults to file's basename.
-        tracker (str, optional): Tracker URL. Defaults to Opentrackr UDP tracker.
+    try:
+        fs = lt.file_storage()
+        lt.add_files(fs, filepath)
+        t = lt.create_torrent(fs)
 
-    Returns:
-        str: Path to the generated .torrent file.
-    """
-    if not ospath.exists(file_path):
-        raise FileNotFoundError(f"File not found: {file_path}")
+        # Optional: piece size (auto if not set)
+        t.set_creator("AnimeToki Bot")
+        t.set_comment("Uploaded via bot")
 
-    file_path_obj = Path(file_path)
-    torrent_name = name or file_path_obj.stem
-    torrent_path = Path("torrents") / f"{torrent_name}.torrent"
-    torrent_path.parent.mkdir(exist_ok=True)
+        # Add trackers (TokyoTosho requires at least one tracker)
+        trackers = [
+            "udp://tracker.opentrackr.org:1337/announce",
+            "udp://tracker.openbittorrent.com:6969/announce"
+        ]
+        for tr in trackers:
+            t.add_tracker(tr)
 
-    fs = lt.file_storage()
-    lt.add_files(fs, str(file_path_obj))
-    
-    ct = lt.create_torrent(fs)
-    ct.add_tracker(tracker)
-    ct.set_creator("AnimeBot")
+        # Hash pieces
+        lt.set_piece_hashes(t, os.path.dirname(filepath))
 
-    # Generate piece hashes
-    lt.set_piece_hashes(ct, str(file_path_obj.parent))
-    
-    torrent_content = ct.generate()
-    with open(torrent_path, "wb") as f:
-        f.write(lt.bencode(torrent_content))
+        # Save torrent
+        torrent_data = lt.bencode(t.generate())
+        with open(torrent_path, "wb") as f:
+            f.write(torrent_data)
 
-    return str(torrent_path)
+        LOGS.info(f"[TokyoTosho] Torrent created: {torrent_path}")
+        return torrent_path
+
+    except Exception as e:
+        LOGS.error(f"[TokyoTosho] Torrent generation failed: {str(e)}")
+        return None
