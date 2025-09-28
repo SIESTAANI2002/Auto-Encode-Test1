@@ -89,7 +89,7 @@ async def seed_torrent_and_upload_log(torrent_path, download_path="./downloads",
             try:
                 await bot.send_document(
                     chat_id=Var.LOG_CHANNEL,
-                    document=InputFile(torrent_path),
+                    document=torrent_path,
                     caption=f"Torrent file: {ospath.basename(torrent_path)}"
                 )
                 LOGS.info(f"[TokyoTosho] Uploaded torrent to log channel: {torrent_file_path}")
