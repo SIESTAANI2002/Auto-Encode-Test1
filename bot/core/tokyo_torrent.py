@@ -1,42 +1,54 @@
 import libtorrent as lt
 import os
-from hashlib import sha1
-from bot import LOGS
+import asyncio
+from datetime import datetime
+from bot import Var, bot, LOGS
+from .reporter import rep
+from .tokyo_upload import upload_to_tokyo
 
-async def generate_torrent(filepath, torrent_path):
-    """Generate a .torrent file for the given file"""
-    if not os.path.exists(filepath):
-        LOGS.error(f"[TokyoTosho] File not found for torrent: {filepath}")
-        return None
-
+async def generate_torrent(file_path, name):
     try:
+        # Make sure encode dir exists
+        os.makedirs("torrents", exist_ok=True)
+
+        # Torrent output path
+        torrent_path = os.path.join("torrents", f"{name}.torrent")
+
         fs = lt.file_storage()
-        lt.add_files(fs, filepath)
+        lt.add_files(fs, file_path)
         t = lt.create_torrent(fs)
 
-        # Optional: piece size (auto if not set)
+        t.add_tracker("udp://tracker.openbittorrent.com:80")
+        t.add_tracker("udp://tracker.opentrackr.org:1337")
+        t.add_tracker("udp://tracker.coppersurfer.tk:6969")
+
         t.set_creator("AnimeToki Bot")
-        t.set_comment("Uploaded via bot")
 
-        # Add trackers (TokyoTosho requires at least one tracker)
-        trackers = [
-            "udp://tracker.opentrackr.org:1337/announce",
-            "udp://tracker.openbittorrent.com:6969/announce"
-        ]
-        for tr in trackers:
-            t.add_tracker(tr)
+        lt.set_piece_hashes(t, os.path.dirname(file_path))
+        torrent = t.generate()
 
-        # Hash pieces
-        lt.set_piece_hashes(t, os.path.dirname(filepath))
-
-        # Save torrent
-        torrent_data = lt.bencode(t.generate())
         with open(torrent_path, "wb") as f:
-            f.write(torrent_data)
+            f.write(lt.bencode(torrent))
 
-        LOGS.info(f"[TokyoTosho] Torrent created: {torrent_path}")
+        LOGS.info(f"[TokyoTosho] Torrent created: {name}")
+
+        # ✅ Step 1: Send torrent file to log channel
+        if os.path.exists(torrent_path):
+            await bot.send_document(
+                chat_id=Var.LOG_CHANNEL,
+                document=torrent_path,
+                caption=f"🌀 Torrent generated for <b>{name}</b>\nTime: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            )
+
+        # ✅ Step 2: Upload torrent to TokyoTosho
+        success = await upload_to_tokyo(torrent_path, name)
+        if success:
+            await rep.report(f"✅ TokyoTosho Upload Success: {name}", "info")
+        else:
+            await rep.report(f"❌ TokyoTosho Upload Failed: {name}", "error")
+
         return torrent_path
 
     except Exception as e:
-        LOGS.error(f"[TokyoTosho] Torrent generation failed: {str(e)}")
+        await rep.report(f"[ERROR] TokyoTosho Torrent Exception ({name}): {e}", "error")
         return None
