@@ -7,9 +7,19 @@ from bot import LOGS, Var, bot
 from .tokyo_upload import upload_to_tokyo  # Your TokyoTosho upload function
 
 
+TRACKERS = [
+    "udp://tracker.openbittorrent.com:80",
+    "udp://tracker.opentrackr.org:1337/announce",
+    "udp://exodus.desync.com:6969/announce",
+    "udp://tracker.torrent.eu.org:451/announce",
+    "http://nyaa.tracker.wf:7777/announce",
+    "udp://open.stealth.si:80/announce"
+]
+
+
 async def generate_torrent(file_path, torrent_name, comment=""):
     """
-    Generate a .torrent file from a video file.
+    Generate a .torrent file from a video file, seed it, and upload concurrently.
     """
     try:
         torrent_file_path = ospath.join("torrents", f"{torrent_name}.torrent")
@@ -18,24 +28,12 @@ async def generate_torrent(file_path, torrent_name, comment=""):
         creator = lt.create_torrent(fs)
         creator.set_creator("AnimeBot")
 
-        # --- Add multiple public trackers ---
-        trackers = [
-            "udp://tracker.openbittorrent.com:80",
-            "udp://tracker.opentrackr.org:1337/announce",
-            "udp://tracker.internetwarriors.net:1337/announce",
-            "udp://tracker.leechers-paradise.org:6969/announce",
-            "udp://tracker.coppersurfer.tk:6969/announce",
-            "udp://tracker.pirateparty.gr:6969/announce",
-            "udp://tracker.cyberia.is:6969/announce",
-            "udp://exodus.desync.com:6969/announce",
-            "udp://tracker.empire-js.us:1337/announce",
-            "udp://9.rarbg.to:2710/announce",
-            "udp://9.rarbg.me:2710/announce"
-        ]
-        for tracker in trackers:
+        # Add all trackers
+        for tracker in TRACKERS:
             creator.add_tracker(tracker)
 
         creator.set_comment(comment or torrent_name)
+
         lt.set_piece_hashes(creator, ospath.dirname(file_path))
         torrent = creator.generate()
         with open(torrent_file_path, "wb") as f:
@@ -43,12 +41,8 @@ async def generate_torrent(file_path, torrent_name, comment=""):
 
         LOGS.info(f"[TokyoTosho] Torrent created: {torrent_file_path}")
 
-        # Seed locally for 10 min, then upload torrent file to log channel
-        await seed_torrent_and_upload_log(torrent_file_path, ospath.dirname(file_path), seed_time=600)
-
-        # Optionally upload to TokyoTosho (if login credentials exist)
-        if hasattr(Var, "TOKYO_USER") and Var.TOKYO_USER:
-            await upload_to_tokyo(torrent_file_path, torrent_name, comment)
+        # Start seeding + concurrent upload tasks
+        await seed_torrent_and_upload(torrent_file_path, ospath.dirname(file_path), comment)
 
         return torrent_file_path
 
@@ -57,9 +51,9 @@ async def generate_torrent(file_path, torrent_name, comment=""):
         return None
 
 
-async def seed_torrent_and_upload_log(torrent_path, download_path="./downloads", seed_time=600):
+async def seed_torrent_and_upload(torrent_path, download_path="./downloads", comment="", seed_time=3600):
     """
-    Seed torrent locally for seed_time seconds, then upload to Telegram log channel.
+    Seed torrent locally and concurrently upload to Telegram log channel and TokyoTosho.
     """
     try:
         LOGS.info(f"[TokyoTosho] Starting local seeding for {torrent_path} ...")
@@ -73,6 +67,22 @@ async def seed_torrent_and_upload_log(torrent_path, download_path="./downloads",
             'flags': lt.torrent_flags.seed_mode
         })
 
+        # Start upload tasks concurrently while seeding
+        tasks = []
+        if ospath.exists(torrent_path) and Var.LOG_CHANNEL:
+            tasks.append(asyncio.create_task(
+                bot.send_document(
+                    chat_id=Var.LOG_CHANNEL,
+                    document=torrent_path,
+                    caption=f"Torrent file: {ospath.basename(torrent_path)}"
+                )
+            ))
+
+        if hasattr(Var, "TOKYO_USER") and Var.TOKYO_USER:
+            tasks.append(asyncio.create_task(
+                upload_to_tokyo(torrent_path, ospath.basename(torrent_path), comment)
+            ))
+
         start = time.time()
         while time.time() - start < seed_time:
             s = h.status()
@@ -83,17 +93,10 @@ async def seed_torrent_and_upload_log(torrent_path, download_path="./downloads",
         ses.remove_torrent(h)
         LOGS.info(f"[TokyoTosho] Finished seeding {torrent_path}")
 
-        # Upload torrent file to Telegram log channel
-        if ospath.exists(torrent_path) and Var.LOG_CHANNEL:
-            try:
-                await bot.send_document(
-                    chat_id=Var.LOG_CHANNEL,
-                    document=torrent_path,
-                    caption=f"Torrent file: {ospath.basename(torrent_path)}"
-                )
-                LOGS.info(f"[TokyoTosho] Uploaded torrent to log channel: {torrent_file_path}")
-            except Exception as e:
-                LOGS.error(f"[TokyoTosho] Failed to upload torrent to log channel: {e}")
+        # Await the upload tasks after seeding
+        if tasks:
+            await asyncio.gather(*tasks)
+            LOGS.info(f"[TokyoTosho] Upload tasks completed for {torrent_path}")
 
     except Exception as e:
-        LOGS.error(f"[TokyoTosho] Seeding Exception: {e}")
+        LOGS.error(f"[TokyoTosho] Seeding/Upload Exception: {e}")
