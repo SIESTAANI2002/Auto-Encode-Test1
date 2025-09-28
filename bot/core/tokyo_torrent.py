@@ -4,7 +4,6 @@ import asyncio
 import time
 from os import path as ospath
 from bot import LOGS, Var, bot
-from pyrogram.types import InputFile
 from .tokyo_upload import upload_to_tokyo  # Your TokyoTosho upload function
 
 
