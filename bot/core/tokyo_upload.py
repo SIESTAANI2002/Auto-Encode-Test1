@@ -1,9 +1,11 @@
 import aiohttp
+import os
 from bot import Var, LOGS
 
 async def upload_to_tokyo(torrent_path, name, comment=""):
     """
     Upload a torrent file to TokyoTosho.
+    Keeps the torrent file if upload fails.
     """
     try:
         data = aiohttp.FormData()
@@ -19,12 +21,18 @@ async def upload_to_tokyo(torrent_path, name, comment=""):
         )
 
         async with aiohttp.ClientSession() as session:
-            async with session.post("https://tokyotosho.info/api/upload", data=data) as resp:
+            async with session.post("https://www.tokyotosho.info/upload.php", data=data) as resp:
                 text = await resp.text()
                 if resp.status != 200:
-                    raise Exception(f"TokyoTosho API returned {resp.status}: {text}")
+                    raise Exception(f"TokyoTosho returned {resp.status}: {text}")
 
                 LOGS.info(f"[TokyoTosho] ✅ Upload success: {name}")
+
+                # delete only if upload succeeded
+                if os.path.exists(torrent_path):
+                    os.remove(torrent_path)
+                    LOGS.info(f"[TokyoTosho] 🗑️ Deleted local torrent: {torrent_path}")
+
                 return True
 
     except Exception as e:
