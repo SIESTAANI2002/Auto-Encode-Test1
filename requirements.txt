@@ -25,4 +25,4 @@ flask
 feedparser==6.0.10
 requests
 beautifulsoup4
-python-libtorrent
+libtorrent
