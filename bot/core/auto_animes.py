@@ -17,7 +17,7 @@ from .reporter import rep
 
 btn_formatter = {
     '1080': '1080p',
-    '720': '𝟳𝟮𝟬𝗽'
+    '480': '48𝟬𝗽'
 }
 
 async def fetch_animes():
@@ -43,7 +43,6 @@ async def get_animes(name, torrent, force=False):
         if not force and ani_id in ani_cache.get('completed', set()):
             return
 
-        # Check DB if quality already uploaded
         ani_data = await db.getAnime(ani_id)
         qual_data = ani_data.get(ep_no) if ani_data else None
         if not force and qual_data and all(qual_data.get(q) for q in Var.QUALS):
@@ -55,7 +54,6 @@ async def get_animes(name, torrent, force=False):
 
         await rep.report(f"New Anime Torrent Found!\n\n{name}", "info")
 
-        # Post photo/caption
         post_msg = await bot.send_photo(
             Var.MAIN_CHANNEL,
             photo=await aniInfo.get_poster(),
@@ -67,9 +65,18 @@ async def get_animes(name, torrent, force=False):
             Var.MAIN_CHANNEL,
             f"‣ <b>Anime Name :</b> <b><i>{name}</i></b>\n\n<i>Downloading...</i>"
         )
-        dl = await TorDownloader("./downloads").download(torrent, name)
+
+        # Retry download up to 3 times if incomplete
+        dl = None
+        for attempt in range(3):
+            dl = await TorDownloader("./downloads").download(torrent, name)
+            if dl and ospath.exists(dl):
+                break
+            await rep.report(f"Download failed or incomplete. Retrying ({attempt+1}/3)...", "warning")
+            await asyncio.sleep(5)
+
         if not dl or not ospath.exists(dl):
-            await rep.report(f"File Download Incomplete, Try Again", "error")
+            await rep.report(f"File Download Incomplete after 3 retries, Skipping", "error")
             await stat_msg.delete()
             return
 
