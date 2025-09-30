@@ -15,11 +15,16 @@ from .ffencoder import FFEncoder
 from .tguploader import TgUploader
 from .reporter import rep
 
+# Button text mapping
 btn_formatter = {
     '1080': '1080p',
     '480': '48𝟬𝗽'
 }
 
+# Track user clicks: {(user_id, ani_id, ep, qual): True}
+user_clicks = {}
+
+# ----------------- Anime Fetch Loop -----------------
 async def fetch_animes():
     await rep.report("Fetch Animes Started !!", "info")
     while True:
@@ -29,6 +34,7 @@ async def fetch_animes():
                 if (info := await getfeed(link, 0)):
                     bot_loop.create_task(get_animes(info.title, info.link))
 
+# ----------------- Main Anime Flow -----------------
 async def get_animes(name, torrent, force=False):
     try:
         aniInfo = TextEditor(name)
@@ -120,24 +126,23 @@ async def get_animes(name, torrent, force=False):
 
             await rep.report(f"✅ Successfully Uploaded {qual} File to Tg...", "info")
             msg_id = msg.id
-            link = f"https://telegram.me/{(await bot.get_me()).username}?start={await encode('get-'+str(msg_id * abs(Var.FILE_STORE)))}"
 
-            # Telegram buttons
-            if post_msg:
-                btn_label = btn_formatter.get(qual, qual)
-                new_btn = InlineKeyboardButton(
-                    f"{btn_label} - {convertBytes(msg.document.file_size)}",
-                    url=link
-                )
-                if len(btns) != 0 and len(btns[-1]) == 1:
-                    btns[-1].append(new_btn)
-                else:
-                    btns.append([new_btn])
-                await editMessage(
-                    post_msg,
-                    post_msg.caption.html if post_msg.caption else "",
-                    InlineKeyboardMarkup(btns)
-                )
+            # Inline button: handled in callback (sendfile action)
+            btn_label = btn_formatter.get(qual, qual)
+            new_btn = InlineKeyboardButton(
+                f"{btn_label} - {convertBytes(msg.document.file_size)}",
+                callback_data=f"sendfile|{ani_id}|{ep_no}|{qual}|{msg_id}"
+            )
+            if len(btns) != 0 and len(btns[-1]) == 1:
+                btns[-1].append(new_btn)
+            else:
+                btns.append([new_btn])
+
+            await editMessage(
+                post_msg,
+                post_msg.caption.html if post_msg.caption else "",
+                InlineKeyboardMarkup(btns)
+            )
 
             # Save in DB
             await db.saveAnime(ani_id, ep_no, qual, post_id)
@@ -156,6 +161,7 @@ async def get_animes(name, torrent, force=False):
     except Exception:
         await rep.report(format_exc(), "error")
 
+# ----------------- Extra Utils -----------------
 async def extra_utils(msg_id, out_path):
     try:
         msg = await bot.get_messages(Var.FILE_STORE, message_ids=msg_id)
@@ -165,5 +171,41 @@ async def extra_utils(msg_id, out_path):
                     await msg.copy(int(chat_id))
                 except Exception:
                     pass
+    except Exception:
+        await rep.report(format_exc(), "error")
+
+# ----------------- Inline Button Handler -----------------
+@bot.on_callback_query()
+async def inline_button_handler(client, callback_query):
+    try:
+        data = callback_query.data
+        if data.startswith("sendfile|"):
+            _, ani_id, ep, qual, msg_id = data.split("|")
+            key = (callback_query.from_user.id, ani_id, ep, qual)
+
+            if key in user_clicks:
+                # Second click → website link
+                site_link = f"https://yourwebsite.com/anime/{ani_id}/ep-{ep}"
+                await callback_query.message.reply_text(f"🌐 Watch/Download here: {site_link}")
+                await callback_query.answer("🔗 Website link sent!", show_alert=False)
+            else:
+                # First click → send file
+                user_clicks[key] = True
+                file_msg = await bot.get_messages(Var.FILE_STORE, int(msg_id))
+                sent = await bot.send_document(
+                    chat_id=callback_query.from_user.id,
+                    document=file_msg.document.file_id,
+                    caption=f"▶️ {qual} | Episode {ep}\nAuto-deletes in 10 minutes."
+                )
+
+                await callback_query.answer("📩 File sent to your PM!", show_alert=False)
+
+                # Auto-delete after 10 mins
+                await asyncio.sleep(600)
+                try:
+                    await sent.delete()
+                except:
+                    pass
+
     except Exception:
         await rep.report(format_exc(), "error")
