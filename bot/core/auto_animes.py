@@ -6,7 +6,8 @@ from aiofiles.os import remove as aioremove
 from traceback import format_exc
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
 
-from bot import bot, bot_loop, Var, ani_cache, ffQueue, ffLock, ff_queued, db
+from bot import bot, bot_loop, Var, ani_cache, ffQueue, ffLock, ff_queued
+from .database import db
 from .tordownload import TorDownloader
 from .func_utils import getfeed, encode, editMessage, sendMessage, convertBytes
 from .text_utils import TextEditor
