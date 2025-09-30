@@ -54,6 +54,7 @@ class Var:
     TOKYO_API_KEY = getenv("TOKYO_API_KEY", "")
     TOKYO_USER = getenv("TOKYO_USER", "")
     TOKYO_PASS = getenv("TOKYO_PASS", "")
+    WEBSITE = getenv("WEBSITE", "")
     
     SEND_SCHEDULE = getenv("SEND_SCHEDULE", "False").lower() == "true"
     BRAND_UNAME = getenv("BRAND_UNAME", "@username")
