@@ -31,4 +31,32 @@ class MongoDB:
     async def reboot(self):
         await self.__animes.drop()
 
+    # -------------------- Per-user delivery -------------------- #
+    async def hasUserReceived(self, ani_id, ep, qual, user_id):
+        """
+        Check if a user has already received a specific quality of a specific episode.
+        """
+        anime = await self.getAnime(ani_id)
+        ep_data = anime.get(ep, {})
+        qual_data = ep_data.get(qual, {})
+        return qual_data.get(str(user_id), False)
+
+    async def markUserReceived(self, ani_id, ep, qual, user_id):
+        """
+        Mark that a user has received this file.
+        """
+        anime = await self.getAnime(ani_id)
+        ep_data = anime.get(ep, {})
+        qual_data = ep_data.get(qual, {})
+
+        # Use user_id as key for this quality
+        qual_data[str(user_id)] = True
+        ep_data[qual] = qual_data
+
+        await self.__animes.update_one(
+            {'_id': ani_id},
+            {'$set': {ep: ep_data}},
+            upsert=True
+        )
+
 db = MongoDB(Var.MONGO_URI, "FZAutoAnimes")
