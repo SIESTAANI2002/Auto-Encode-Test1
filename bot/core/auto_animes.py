@@ -1,42 +1,35 @@
 # bot/core/auto_animes.py
 import asyncio
-from asyncio import Event, create_task
+from asyncio import Event
 from os import path as ospath
 from aiofiles.os import remove as aioremove
 from traceback import format_exc
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from bot import bot, bot_loop, Var, ani_cache, ffQueue, ffLock, ff_queued
-from .database import db                # import DB directly to avoid bot -> db circular issues
 from .tordownload import TorDownloader
+from .database import db
 from .func_utils import getfeed, encode, editMessage, sendMessage, convertBytes
 from .text_utils import TextEditor
 from .ffencoder import FFEncoder
 from .tguploader import TgUploader
 from .reporter import rep
 
-# short labels for the post buttons
+# Keep labels short and stable
 btn_formatter = {
     '1080': '1080p',
-    '720': '720p',
     '480': '480p',
-    '360': '360p'
+    # Add other qualities if needed
 }
 
-# in-memory cache for post message object -> avoids immediate re-fetch
-episode_posts = {}  # (ani_id, ep_no) -> Message
+# Cache mapping (ani_id|ep|qual) -> metadata (size, file_msg_id) to avoid races
+# keys like "12345|12|1080"
+ani_cache_local = {}
 
-# small in-memory set to avoid concurrent duplicate sends per user
-_user_sending = set()  # (ani_id, ep_no, qual, user_id)
-
-
+# ------------------------------------------------------------------
+# Fetching loop that checks RSS feeds and schedules processing
+# ------------------------------------------------------------------
 async def fetch_animes():
-    """
-    Main fetch loop. Supports Var.RSS_ITEMS as:
-      - dict: {"720":"url", "1080":"url"}
-      - list/tuple: ["url_for_first_qual", "url_for_second_qual", ...]
-    It will schedule get_animes(title, link, qual) tasks.
-    """
     await rep.report("Fetch Animes Started !!", "info")
     while True:
         try:
@@ -48,111 +41,87 @@ async def fetch_animes():
                 await rep.report("No RSS feeds configured (Var.RSS_ITEMS empty).", "warning")
                 continue
 
-            # normalize feeds to (qual, feed_url) pairs
-            feeds = []
+            # Var.RSS_ITEMS can be dict or list — support both
             if isinstance(Var.RSS_ITEMS, dict):
-                feeds = list(Var.RSS_ITEMS.items())
-            elif isinstance(Var.RSS_ITEMS, (list, tuple)):
-                # if list, map to Var.QUALS in order when possible, else mark qual as 'unknown'
-                for idx, url in enumerate(Var.RSS_ITEMS):
-                    qual = Var.QUALS[idx] if idx < len(Var.QUALS) else f"q{idx}"
-                    feeds.append((qual, url))
+                feed_iter = Var.RSS_ITEMS.items()
             else:
-                # fallback: single url -> unknown qual
-                feeds = [(Var.QUALS[0] if hasattr(Var, "QUALS") and Var.QUALS else "auto", Var.RSS_ITEMS)]
+                # assume list of urls -> treat them as generic feed (qual will be None)
+                feed_iter = ((None, url) for url in Var.RSS_ITEMS)
 
-            for qual, feed_link in feeds:
+            for qual, feed_link in feed_iter:
                 try:
-                    # minimize log spam — you can re-enable if you want more logs:
-                    # await rep.report(f"Checking {qual} feed: {feed_link}", "info")
+                    # optional log (commented if you don't want frequent logs)
+                    # await rep.report(f"Checking {qual or 'feed'}: {feed_link}", "info")
                     entry = await getfeed(feed_link, 0)
                     if entry:
-                        # schedule processing
+                        # schedule get_animes with quality hint (qual may be None)
                         bot_loop.create_task(get_animes(entry.title, entry.link, qual))
                 except Exception as e:
-                    await rep.report(f"Error fetching feed {qual}: {e}", "error")
+                    await rep.report(f"Error fetching feed {feed_link}: {e}", "error")
         except Exception:
             await rep.report(format_exc(), "error")
 
-
-async def get_animes(name, torrent, qual=None, force=False):
+# ------------------------------------------------------------------
+# Main single-entry processor
+# ------------------------------------------------------------------
+async def get_animes(name, torrent, qual_hint=None, force=False):
     """
-    Process a single RSS entry:
-      - resolve Ani metadata
-      - skip already uploaded quality (per DB)
-      - create or reuse a single post per episode
-      - download .torrent, encode (in configured Var.QUALS order), upload to Var.FILE_STORE
-      - append inline buttons (short callback_data), storing uploaded message id in ani_cache
+    name: feed item's title
+    torrent: feed link (torrent file or magnet)
+    qual_hint: optional string '720' or '1080' if feed is quality-specific
     """
     try:
         aniInfo = TextEditor(name)
         await aniInfo.load_anilist()
-        ani_id = aniInfo.adata.get('id') or abs(hash(name)) % (10 ** 9)
+        ani_id = aniInfo.adata.get('id')
         ep_no = aniInfo.pdata.get("episode_number")
 
-        # ensure ep_no is a string key for DB consistency
-        ep_key = str(ep_no) if ep_no is not None else "0"
+        # fallback numeric hashed id
+        if not ani_id:
+            ani_id = abs(hash(name)) % (10 ** 9)
 
-        # avoid duplicate processing of same anime concurrently
+        # avoid duplicate runs per anime id
         if ani_id not in ani_cache.get('ongoing', set()):
             ani_cache.setdefault('ongoing', set()).add(ani_id)
         elif not force:
             return
 
-        # quick db check: if all qualities already present -> skip
+        if not force and ani_id in ani_cache.get('completed', set()):
+            return
+
+        # check DB whether all qualities already present for this episode
         anime_doc = await db.getAnime(ani_id)
-        if not force and anime_doc:
-            ep_info = anime_doc.get(ep_key) or {}
-            # ep_info expected like {'720': True, '1080': True}
-            if ep_info and all(ep_info.get(q) for q in getattr(Var, "QUALS", [])):
+        ep_doc = {}
+        if anime_doc:
+            # some DBs store episodes under "episodes" or top-level digit keys; handle both
+            ep_doc = anime_doc.get("episodes", {}).get(str(ep_no), {}) or anime_doc.get(str(ep_no), {}) or {}
+
+        # If episode exists and all Var.QUALS present -> skip
+        if not force and ep_doc:
+            qual_flags = ep_doc.get("qualities") or {q: ep_doc.get(q) for q in Var.QUALS if q in ep_doc}
+            if qual_flags and all(qual_flags.get(q) for q in Var.QUALS):
                 return
 
-        # skip batches
         if "[Batch]" in name:
             await rep.report(f"Torrent Skipped (Batch): {name}", "warning")
             return
 
-        await rep.report(f"New Anime Torrent Found!\n{name} from {qual or 'feed'}", "info")
+        await rep.report(f"New Anime Torrent Found!\n{name} from {qual_hint or 'feed'}", "info")
 
-        # create or reuse post for this episode
-        post_msg = None
-        post_id = None
-
+        # Create channel post (poster + caption)
         try:
-            existing_post_id = await db.getEpisodePost(ani_id, ep_key)
+            poster = await aniInfo.get_poster()
         except Exception:
-            existing_post_id = None
+            poster = None
+        caption = await aniInfo.get_caption()
+        post_msg = await bot.send_photo(Var.MAIN_CHANNEL, photo=poster, caption=caption)
+        post_id = post_msg.id
 
-        if existing_post_id:
-            try:
-                post_msg = await bot.get_messages(Var.MAIN_CHANNEL, message_ids=existing_post_id)
-                post_id = existing_post_id
-            except Exception:
-                post_msg = None
-                post_id = None
-
-        if not post_msg:
-            try:
-                poster = await aniInfo.get_poster()
-            except Exception:
-                poster = None
-            caption = await aniInfo.get_caption()
-            post_msg = await bot.send_photo(Var.MAIN_CHANNEL, photo=poster, caption=caption)
-            post_id = post_msg.id
-            episode_posts[(ani_id, ep_key)] = post_msg
-
-        # status message for progress
+        # Status message for progress (temporary)
         stat_msg = await sendMessage(Var.MAIN_CHANNEL, f"‣ <b>Anime Name :</b> <b><i>{name}</i></b>\n\n<i>Downloading...</i>")
 
-        # 1) Download .torrent and the file (with simple retries)
-        dl = None
-        for attempt in range(3):
-            dl = await TorDownloader("./downloads").download(torrent, name)
-            if dl and ospath.exists(dl):
-                break
-            await rep.report(f"File download failed / incomplete. Retry {attempt+1}/3 for {name}", "warning")
-            await asyncio.sleep(5)
-
+        # 1) Download .torrent (or magnet)
+        dl = await TorDownloader("./downloads").download(torrent, name)
         if not dl or not ospath.exists(dl):
             await rep.report(f"File Download Incomplete, Try Again: {name}", "error")
             try:
@@ -161,31 +130,35 @@ async def get_animes(name, torrent, qual=None, force=False):
                 pass
             return
 
-        # 2) Put into queue and wait for encoder slot
-        post_id_local = post_id
+        await editMessage(stat_msg, f"‣ <b>Anime Name :</b> <b><i>{name}</i></b>\n\n<i>Ready to Encode...</i>")
+        await rep.report(f"Queued for encode: {name} [{qual_hint or 'auto'}]", "info")
+
+        # Put this post into queue mechanism your main thread uses
         ffEvent = Event()
-        ff_queued[post_id_local] = ffEvent
+        ff_queued[post_id] = ffEvent
         if ffLock.locked():
             await editMessage(stat_msg, f"‣ <b>Anime Name :</b> <b><i>{name}</i></b>\n\n<i>Queued to Encode...</i>")
-            await rep.report("Added Task to Queue...", "info")
-        await ffQueue.put(post_id_local)
+        await ffQueue.put(post_id)
         await ffEvent.wait()
 
-        # 3) Acquire encoder lock and run encodes for all Var.QUALS in order
+        # Acquire global encoder lock
         await ffLock.acquire()
         try:
-            # prepare button list to edit post once all qualities have uploaded
-            btn_rows = []
+            # We'll collect buttons state here; build keyboard from the collected file_msg_ids
+            keyboard_rows = []
 
-            for q in getattr(Var, "QUALS", ["1080", "720"]):
-                filename = await aniInfo.get_upname(q)
-                await editMessage(stat_msg, f"‣ <b>Anime Name :</b> <b><i>{filename or name}</i></b>\n\n<i>Ready to Encode...</i>")
-                await rep.report(f"Starting Encode for quality {q} ...", "info")
+            # iterate in configured order
+            for qual in Var.QUALS:
+                # If feed itself strongly hinted qual and it doesn't match, allow encoding anyway.
+                # get final upload name
+                filename = await aniInfo.get_upname(qual)
+                out_path = f"./encode/{filename}" if filename else None
 
+                await editMessage(stat_msg, f"‣ <b>Anime Name :</b> <b><i>{filename or name}</i></b>\n\n<i>Encoding Started ({qual})...</i>")
                 try:
-                    encoded_path = await FFEncoder(stat_msg, dl, filename, q).start_encode()
+                    encoded_path = await FFEncoder(stat_msg, dl, filename, qual).start_encode()
                 except Exception as e:
-                    await rep.report(f"Error encoding {name} [{q}]: {e}", "error")
+                    await rep.report(f"Error encoding {name} [{qual}]: {e}", "error")
                     try:
                         await stat_msg.delete()
                     except Exception:
@@ -193,11 +166,11 @@ async def get_animes(name, torrent, qual=None, force=False):
                     return
 
                 await rep.report(f"Successfully Compressed {filename}", "info")
-                await editMessage(stat_msg, f"‣ <b>Anime Name :</b> <b><i>{filename}</i></b>\n\n<i>Uploading {q}...</i>")
+                await editMessage(stat_msg, f"‣ <b>Anime Name :</b> <b><i>{filename}</i></b>\n\n<i>Uploading {qual}...</i>")
 
-                # 4) Upload to Var.FILE_STORE via TgUploader
+                # Upload to Telegram FILE_STORE (this returns the message object)
                 try:
-                    uploaded_msg = await TgUploader(stat_msg).upload(encoded_path, q)
+                    uploaded_msg = await TgUploader(stat_msg).upload(encoded_path, qual)
                 except Exception as e:
                     await rep.report(f"Error uploading {filename}: {e}", "error")
                     try:
@@ -206,85 +179,186 @@ async def get_animes(name, torrent, qual=None, force=False):
                         pass
                     return
 
-                await rep.report(f"Successfully Uploaded {q} to Tg", "info")
+                await rep.report(f"Successfully Uploaded {qual} File to Tg...", "info")
 
-                # Save reference into in-memory cache so callback_data can be small
-                cache_key = f"{ani_id}|{ep_key}|{q}"
-                ani_cache.setdefault('files', {})[cache_key] = {
-                    "msg_id": uploaded_msg.id,
-                    "size": getattr(getattr(uploaded_msg, "document", None), "file_size", None)
-                             or getattr(getattr(uploaded_msg, "video", None), "file_size", None)
-                             or 0,
-                }
+                # Save file message id into DB under episodes -> qualities -> qual: {file_msg_id:..., size:...}
+                file_msg_id = uploaded_msg.id
+                size_bytes = getattr(uploaded_msg.document, "file_size", None) or getattr(uploaded_msg.video, "file_size", None) or 0
 
-                # create the button URL link for direct "start" link (your existing scheme)
-                me = await bot.get_me()
+                # Database: try to save per-episode, per-quality metadata
+                # Expectation: db.saveAnime should accept file_msg_id and post_id (adapt your DB accordingly)
                 try:
-                    tg_username = me.username
-                except Exception:
-                    tg_username = None
-                link = None
-                if tg_username:
+                    # Newer DB save: (ani_id, ep_no, qual, post_id=None, file_msg_id=None, size=None)
+                    # If your DB doesn't support the extra args, update database.py accordingly.
+                    await db.saveAnime(ani_id, ep_no, qual, post_id=post_id, file_msg_id=file_msg_id, size=size_bytes)
+                except TypeError:
+                    # fallback to older signature: save qual flag + store global msg_id (post id)
+                    await db.saveAnime(ani_id, ep_no, qual, post_id=post_id)
+                    # store file msg id under anime doc directly if possible (best-effort)
                     try:
-                        enc = await encode('get-' + str(uploaded_msg.id * abs(int(Var.FILE_STORE))))
-                        link = f"https://telegram.me/{tg_username}?start={enc}"
+                        await db.__animes.update_one(
+                            {'_id': ani_id},
+                            {'$set': {f"episodes.{ep_no}.qualities.{qual}.file_msg_id": file_msg_id,
+                                      f"episodes.{ep_no}.qualities.{qual}.size": size_bytes}},
+                            upsert=True
+                        )
                     except Exception:
-                        link = None
+                        pass
 
-                # create button label and add to btn_rows
-                label = f"{btn_formatter.get(q, q)} - {convertBytes(ani_cache[cache_key]['size'])}"
-                new_btn = InlineKeyboardButton(label if link is None else label, callback_data=f"s|{ani_id}|{ep_key}|{q}")
-                # Note: we use callback_data 's|ani|ep|qual' (keeps it short)
+                # build short callback_data that fits telegram limits:
+                # format: "s|ani_id|ep_no|qual|file_msg_id"
+                # all numeric/short -> stays small
+                cb = f"s|{ani_id}|{ep_no}|{qual}|{file_msg_id}"
 
-                # append to keyboard in existing style: if last row has 1 button -> add to same row
-                if btn_rows and len(btn_rows[-1]) == 1:
-                    btn_rows[-1].append(new_btn)
-                else:
-                    btn_rows.append([new_btn])
+                # For button label show quality and human size
+                label = f"{btn_formatter.get(qual, qual)} - {convertBytes(size_bytes)}"
+                keyboard_rows.append([InlineKeyboardButton(label, callback_data=cb)])
 
-                # mark quality in DB
-                await db.saveAnime(ani_id, ep_key, q, post_id_local)
+                # schedule any extras (backup copy etc.)
+                bot_loop.create_task(extra_utils(file_msg_id, encoded_path))
 
-                # extra utils (backup, copy etc.)
-                create_task(extra_utils(uploaded_msg.id, encoded_path))
-
-            # after all qualities processed, edit post to include built keyboard
+            # At the end, edit the post to include the inline keyboard (all constructed)
             try:
-                if (ani_id, ep_key) in episode_posts:
-                    post_obj = episode_posts[(ani_id, ep_key)]
-                else:
-                    post_obj = await bot.get_messages(Var.MAIN_CHANNEL, message_ids=post_id_local)
-                await editMessage(post_obj, post_obj.caption.html if post_obj.caption else "", InlineKeyboardMarkup(btn_rows))
+                if keyboard_rows:
+                    await editMessage(post_msg, post_msg.caption.html if post_msg.caption else "", InlineKeyboardMarkup(keyboard_rows))
             except Exception as e:
                 await rep.report(f"Failed to edit post buttons: {e}", "error")
 
         finally:
+            # release lock always
             try:
                 ffLock.release()
             except Exception:
                 pass
 
-        # cleanup download file (original)
-        try:
-            await aioremove(dl)
-        except Exception:
-            pass
+            # delete temp download file (original torrent/file) to save space
+            try:
+                await aioremove(dl)
+            except Exception:
+                pass
 
-        try:
-            await stat_msg.delete()
-        except Exception:
-            pass
+            try:
+                await stat_msg.delete()
+            except Exception:
+                pass
 
+        # mark completed in memory cache
         ani_cache.setdefault('completed', set()).add(ani_id)
 
     except Exception:
         await rep.report(format_exc(), "error")
 
+# ------------------------------------------------------------------
+# Callback handler for inline button clicks
+# ------------------------------------------------------------------
+async def handle_file_click(client, callback_query):
+    """
+    Expected callback_data format:
+        "s|{ani_id}|{ep_no}|{qual}|{file_msg_id}"
+    Behavior:
+      - If user has NOT received that file before -> bot sends the file to user's PM, marks DB,
+        starts a timer to delete bot-delivered file after Var.SEND_EXPIRE seconds.
+      - If user already received -> reply callback with website link (Var.WEBSITE).
+    """
+    try:
+        data = callback_query.data or ""
+        user = callback_query.from_user
+        user_id = user.id if user else None
 
+        if not data.startswith("s|"):
+            await callback_query.answer("Invalid request.", show_alert=True)
+            return
+
+        parts = data.split("|")
+        if len(parts) != 5:
+            await callback_query.answer("Invalid data.", show_alert=True)
+            return
+
+        _, ani_id_s, ep_s, qual, file_msg_id_s = parts
+        try:
+            ani_id = int(ani_id_s)
+            ep_no = str(int(ep_s))  # keep string key for DB
+            file_msg_id = int(file_msg_id_s)
+        except Exception:
+            await callback_query.answer("Invalid ids.", show_alert=True)
+            return
+
+        # Check DB whether this user already got the file for this (ani, ep, qual)
+        try:
+            already = await db.hasUserReceived(ani_id, ep_no, qual, user_id)
+        except Exception:
+            # if DB method missing, fallback to in-memory map (not persistent)
+            already = False
+
+        if already:
+            # second click -> send website link (if present)
+            url = getattr(Var, "WEBSITE", None)
+            if url:
+                # callback answer with url (Telegram expects valid url)
+                try:
+                    await callback_query.answer("You already received the file — visit website instead.", url=url)
+                except Exception:
+                    # fallback to simple alert
+                    await callback_query.answer("You already received the file — visit website instead.", show_alert=True)
+            else:
+                await callback_query.answer("You already received the file.", show_alert=True)
+            return
+
+        # Not received yet -> send file to user's PM
+        try:
+            # fetch the file message from FILE_STORE to copy/send it to user
+            # we use get_messages to fetch the message object and then copy to user to preserve file ID
+            file_msg = await bot.get_messages(Var.FILE_STORE, message_ids=file_msg_id)
+            if not file_msg:
+                await callback_query.answer("File temporarily unavailable.", show_alert=True)
+                return
+
+            # send by copy (preserves file, faster)
+            await callback_query.answer("Preparing file...", show_alert=False)
+
+            # copy (preferred) rather than re-uploading
+            sent = await file_msg.copy(user_id)
+            # mark DB: user received
+            try:
+                await db.markUserReceived(ani_id, ep_no, qual, user_id)
+            except Exception:
+                # silent fail if DB doesn't support it
+                pass
+
+            # Tell user
+            try:
+                await bot.send_message(user_id, f"✅ Sent: {file_msg.document.file_name if getattr(file_msg, 'document', None) else 'file'}\nThis link will be available for {getattr(Var, 'SEND_EXPIRE', 3600)} seconds.")
+            except Exception:
+                pass
+
+            # schedule deletion of message after SEND_EXPIRE seconds (if configured)
+            expire = getattr(Var, "SEND_EXPIRE", 600)  # default 600s = 10min
+            if expire and expire > 0:
+                async def _del_after(u_id, m_id, ttl):
+                    await asyncio.sleep(ttl)
+                    try:
+                        await bot.delete_messages(chat_id=u_id, message_ids=m_id)
+                    except Exception:
+                        pass
+                # run background cleanup
+                bot_loop.create_task(_del_after(user_id, sent.id, expire))
+        except Exception as e:
+            await callback_query.answer("Failed to send file.", show_alert=True)
+            await rep.report(f"Error sending file to user {user_id}: {e}", "error")
+
+    except Exception:
+        await rep.report(format_exc(), "error")
+
+# A Pyrogram handler wrapper -- import this function in your __main__ and register:
+# from bot.core.auto_animes import handle_file_click
+# @bot.on_callback_query()
+# async def inline_button_handler(client, callback_query):
+#     await handle_file_click(client, callback_query)
+
+# ------------------------------------------------------------------
+# Extra utils (backup copying, etc.)
+# ------------------------------------------------------------------
 async def extra_utils(msg_id, out_path):
-    """
-    Copy uploaded stored file message to backup channels (if configured).
-    """
     try:
         msg = await bot.get_messages(Var.FILE_STORE, message_ids=msg_id)
         if Var.BACKUP_CHANNEL and Var.BACKUP_CHANNEL != "0":
@@ -293,114 +367,5 @@ async def extra_utils(msg_id, out_path):
                     await msg.copy(int(chat_id))
                 except Exception:
                     pass
-    except Exception:
-        await rep.report(format_exc(), "error")
-
-
-# -------------------------
-# File-send on callback
-# -------------------------
-async def handle_file_click(callback_query, ani_id, ep_key, qual):
-    """
-    Public function so main.py can import handle_file_click().
-    Will copy the stored message from Var.FILE_STORE to the user's PM once.
-    Subsequent clicks lead to Var.WEBSITE (if provided).
-    """
-    try:
-        user_id = callback_query.from_user.id
-        cache_key = f"{ani_id}|{ep_key}|{qual}"
-
-        # short-circuit: ensure we have a cached msg_id
-        fileinfo = ani_cache.get('files', {}).get(cache_key)
-        if not fileinfo:
-            await callback_query.answer("File not ready yet. Try again later.", show_alert=True)
-            return
-
-        # prevent concurrent duplicate sends to same user
-        sending_key = (ani_id, ep_key, qual, user_id)
-        if sending_key in _user_sending:
-            await callback_query.answer("Please wait...", show_alert=False)
-            return
-
-        # check DB: has user already received this quality?
-        try:
-            already = await db.hasUserReceived(ani_id, ep_key, qual, user_id)
-        except Exception:
-            already = False
-
-        if already:
-            # direct user to website or show message
-            website = getattr(Var, "WEBSITE", None)
-            if website:
-                # show as URL button response
-                try:
-                    await callback_query.answer("You already received the file — visit website instead.", url=website)
-                except Exception:
-                    # fallback: simple alert
-                    await callback_query.answer("You already received the file! Visit website.", show_alert=True)
-            else:
-                await callback_query.answer("You already received the file!", show_alert=True)
-            return
-
-        # mark as "sending" to prevent race
-        _user_sending.add(sending_key)
-        try:
-            # copy the uploaded message from FILE_STORE to user
-            stored_msg_id = fileinfo.get("msg_id")
-            if not stored_msg_id:
-                await callback_query.answer("File not available.", show_alert=True)
-                return
-
-            # Copy the message (keeps file original metadata)
-            try:
-                copied = await bot.copy_message(chat_id=user_id, from_chat_id=Var.FILE_STORE, message_id=stored_msg_id)
-            except Exception as e:
-                await callback_query.answer(f"Failed to send file: {e}", show_alert=True)
-                return
-
-            # mark in DB that user received this quality (so second click goes to website)
-            try:
-                await db.markUserReceived(ani_id, ep_key, qual, user_id)
-            except Exception:
-                # ignore DB errors but continue
-                pass
-
-            # schedule deletion of the sent message after TTL (Var.SEND_TTL, default 600)
-            ttl = int(getattr(Var, "SEND_TTL", 600))
-            async def _del_after(msg_obj, ttl_s):
-                try:
-                    await asyncio.sleep(ttl_s)
-                    await bot.delete_messages(chat_id=msg_obj.chat.id, message_ids=msg_obj.id)
-                except Exception:
-                    pass
-
-            create_task(_del_after(copied, ttl))
-
-            await callback_query.answer("File sent to your PM. It will be removed after a short time.", show_alert=True)
-
-        finally:
-            _user_sending.discard(sending_key)
-
-    except Exception:
-        await rep.report(format_exc(), "error")
-
-
-# pyrogram callback registration so clicks are handled even if main.py doesn't explicitly call handle_file_click
-@bot.on_callback_query()
-async def _internal_callback_handler(client, callback_query):
-    data = callback_query.data or ""
-    # we use short callback prefix 's|' so it's tiny
-    if not data.startswith("s|"):
-        return
-    try:
-        # expected form: s|<ani_id>|<ep_key>|<qual>
-        parts = data.split("|")
-        if len(parts) != 4:
-            await callback_query.answer("Invalid button.", show_alert=True)
-            return
-        _, ani_id_s, ep_key, qual = parts
-        # ani_id may be int
-        ani_id = int(ani_id_s) if ani_id_s.isdigit() else ani_id_s
-        await handle_file_click(callback_query, ani_id, ep_key, qual)
     except Exception:
         await rep.report(format_exc(), "error")
