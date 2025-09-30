@@ -42,13 +42,21 @@ async def restart():
         except Exception as e:
             LOGS.error(e)
 
-# ------------------ Inline Button Handler ------------------
+
+# ---------------- Inline Button Handler ----------------
 @bot.on_callback_query()
-async def inline_button_handler(client, callback_query: CallbackQuery):
+async def inline_button_handler(client, callback_query):
+    """
+    Handles clicks on inline buttons (1080p/720p) for anime episodes.
+    Sends file one-time per user, otherwise sends website link.
+    """
     data = callback_query.data
     if data.startswith("sendfile|"):
-        _, ani_id, ep, qual, file_path = data.split("|")
-        await handle_file_click(callback_query, ani_id, int(ep), qual, file_path)
+        try:
+            _, ani_id, ep, qual, file_path = data.split("|")
+            await handle_file_click(callback_query, ani_id, int(ep), qual, file_path)
+        except Exception as e:
+            await callback_query.answer(f"Error: {e}", show_alert=True)
 
 # ------------------ Queue loop ------------------
 async def queue_loop():
