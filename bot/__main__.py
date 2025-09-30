@@ -2,19 +2,20 @@ from asyncio import create_task, create_subprocess_exec, create_subprocess_shell
 from aiofiles import open as aiopen
 from pyrogram import idle
 from pyrogram.filters import command, user
+from pyrogram.types import CallbackQuery
 from os import path as ospath, execl, kill
 from sys import executable
 from signal import SIGKILL
 
 from bot import bot, Var, bot_loop, sch, LOGS, ffQueue, ffLock, ffpids_cache, ff_queued
-from bot.core.auto_animes import fetch_animes
+from bot.core.auto_animes import fetch_animes, handle_file_click
 from bot.core.func_utils import clean_up, new_task, editMessage
 from bot.modules.up_posts import upcoming_animes
 
 # ------------------ Restart command ------------------
 @bot.on_message(command('restart') & user(Var.ADMINS))
 @new_task
-async def restart(client, message):
+async def restart_cmd(client, message):
     rmessage = await message.reply('<i>Restarting...</i>')
     if sch.running:
         sch.shutdown(wait=False)
@@ -40,6 +41,14 @@ async def restart():
             await bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text="<i>Restarted !</i>")
         except Exception as e:
             LOGS.error(e)
+
+# ------------------ Inline Button Handler ------------------
+@bot.on_callback_query()
+async def inline_button_handler(client, callback_query: CallbackQuery):
+    data = callback_query.data
+    if data.startswith("sendfile|"):
+        _, ani_id, ep, qual, file_path = data.split("|")
+        await handle_file_click(callback_query, ani_id, int(ep), qual, file_path)
 
 # ------------------ Queue loop ------------------
 async def queue_loop():
