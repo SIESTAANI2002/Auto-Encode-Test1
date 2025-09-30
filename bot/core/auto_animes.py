@@ -149,8 +149,7 @@ async def get_animes(name, torrent, force=False):
         await stat_msg.delete()
 
         # Cleanup original file after all qualities
-        if ospath.exists(dl):
-            await aioremove(dl)
+        await aioremove(dl)
 
         ani_cache.setdefault('completed', set()).add(ani_id)
 
