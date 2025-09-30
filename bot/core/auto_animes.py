@@ -7,8 +7,8 @@ from traceback import format_exc
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from bot import bot, bot_loop, Var, ani_cache, ffQueue, ffLock, ff_queued
-from .database import db
 from .tordownload import TorDownloader
+from .database import db
 from .func_utils import getfeed, encode, editMessage, sendMessage, convertBytes
 from .text_utils import TextEditor
 from .ffencoder import FFEncoder
@@ -17,10 +17,11 @@ from .reporter import rep
 
 btn_formatter = {
     '1080': '1080p',
+    '720': '720p',
     '480': '48𝟬𝗽'
 }
 
-# ----------------- Fetch Animes ----------------- #
+# ------------------ Fetch RSS ------------------ #
 async def fetch_animes():
     await rep.report("Fetch Animes Started !!", "info")
     while True:
@@ -30,7 +31,7 @@ async def fetch_animes():
                 if (info := await getfeed(link, 0)):
                     bot_loop.create_task(get_animes(info.title, info.link))
 
-# ----------------- Download & Encode ----------------- #
+# ------------------ Main anime processing ------------------ #
 async def get_animes(name, torrent, force=False):
     try:
         aniInfo = TextEditor(name)
@@ -56,6 +57,7 @@ async def get_animes(name, torrent, force=False):
 
         await rep.report(f"New Anime Torrent Found!\n\n{name}", "info")
 
+        # Post initial message
         post_msg = await bot.send_photo(
             Var.MAIN_CHANNEL,
             photo=await aniInfo.get_poster(),
@@ -68,7 +70,7 @@ async def get_animes(name, torrent, force=False):
             f"‣ <b>Anime Name :</b> <b><i>{name}</i></b>\n\n<i>Downloading...</i>"
         )
 
-        # Retry download up to 3 times if incomplete
+        # Retry download up to 3 times
         dl = None
         for attempt in range(3):
             dl = await TorDownloader("./downloads").download(torrent, name)
@@ -94,6 +96,7 @@ async def get_animes(name, torrent, force=False):
         await ffLock.acquire()
         btns = []
 
+        # Encode and upload each quality
         for qual in Var.QUALS:
             filename = await aniInfo.get_upname(qual)
             await editMessage(stat_msg, f"‣ <b>Anime Name :</b> <b><i>{name}</i></b>\n\n<i>Ready to Encode...</i>")
@@ -122,9 +125,9 @@ async def get_animes(name, torrent, force=False):
 
             await rep.report(f"✅ Successfully Uploaded {qual} File to Tg...", "info")
             msg_id = msg.id
-            link = f"https://telegram.me/{(await bot.get_me()).username}?start={await encode('get-'+str(msg_id * abs(Var.FILE_STORE)))}"
 
-            # Telegram buttons
+            # Create Telegram button for user
+            link = f"https://telegram.me/{(await bot.get_me()).username}?start={await encode('get-'+str(msg_id * abs(Var.FILE_STORE)))}"
             if post_msg:
                 btn_label = btn_formatter.get(qual, qual)
                 new_btn = InlineKeyboardButton(
@@ -144,7 +147,7 @@ async def get_animes(name, torrent, force=False):
             # Save in DB
             await db.saveAnime(ani_id, ep_no, qual, post_id)
 
-            # Extra utils (backup etc.)
+            # Extra utils
             bot_loop.create_task(extra_utils(msg_id, out_path))
 
         ffLock.release()
@@ -156,7 +159,7 @@ async def get_animes(name, torrent, force=False):
         await rep.report(format_exc(), "error")
 
 
-# ----------------- Extra Utils ----------------- #
+# ------------------ Extra utils ------------------ #
 async def extra_utils(msg_id, out_path):
     try:
         msg = await bot.get_messages(Var.FILE_STORE, message_ids=msg_id)
@@ -170,25 +173,37 @@ async def extra_utils(msg_id, out_path):
         await rep.report(format_exc(), "error")
 
 
-# ----------------- Inline Button Handler ----------------- #
-@bot.on_callback_query()
-async def inline_button_handler(client, callback_query):
-    data = callback_query.data
-    if data.startswith("sendfile|"):
-        _, ani_id, ep, qual, file_path = data.split("|")
-        await handle_file_click(callback_query, ani_id, int(ep), qual, file_path)
-
-
+# ------------------ One-time file delivery ------------------ #
 async def handle_file_click(callback_query, ani_id, ep, qual, file_path):
     user_id = callback_query.from_user.id
 
     # Check if user already received this file
-    if await db.hasUserReceived(ani_id, ep, qual, user_id):
-        await callback_query.answer("You already got this file! Visit website instead.", show_alert=True)
-        await callback_query.message.reply("Download link: https://yourwebsite.com")
-        return
+    already_sent = await db.hasUserReceived(ani_id, ep, qual, user_id)
 
-    # Send file
-    await bot.send_document(user_id, file_path)
-    await db.markUserReceived(ani_id, ep, qual, user_id)
-    await callback_query.answer("File sent! Available for 10min.")
+    if not already_sent:
+        # Send file
+        await bot.send_document(
+            chat_id=user_id,
+            document=file_path,
+            caption=f"{qual} - Episode {ep}"
+        )
+
+        # Mark as sent
+        await db.markUserReceived(ani_id, ep, qual, user_id)
+
+        # Auto-delete after 10min
+        asyncio.create_task(auto_delete_file(user_id, file_path, delay=600))
+
+    else:
+        # Send website link
+        await bot.send_message(
+            chat_id=user_id,
+            text=f"You already downloaded this episode. Get it from my website: {Var.WEBSITE_URL}"
+        )
+
+
+async def auto_delete_file(user_id, file_path, delay=600):
+    await asyncio.sleep(delay)
+    # Optional: implement deletion logic if messages IDs are stored
+    # Currently placeholder
+    pass
