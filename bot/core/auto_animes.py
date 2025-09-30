@@ -132,7 +132,7 @@ async def get_animes(name, torrent, force=False):
                 btn_label = btn_formatter.get(qual, qual)
                 new_btn = InlineKeyboardButton(
                     f"{btn_label} - {convertBytes(msg.document.file_size)}",
-                    url=link
+                    callback_data=f"sendfile|{ani_id}|{ep_no}|{qual}|{out_path}"
                 )
                 if len(btns) != 0 and len(btns[-1]) == 1:
                     btns[-1].append(new_btn)
