@@ -10,7 +10,7 @@ from pyrogram import Client
 from pyrogram.enums import ParseMode
 from dotenv import load_dotenv
 from uvloop import install
-from .core.database import db
+
 
 install()
 basicConfig(format="[%(asctime)s] [%(name)s | %(levelname)s] - %(message)s [%(filename)s:%(lineno)d]",
