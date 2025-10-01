@@ -6,7 +6,7 @@ class MongoDB:
     def __init__(self, uri, database_name):
         self.__client = AsyncIOMotorClient(uri)
         self.__db = self.__client[database_name]
-        # Each bot gets its own collection
+        # collection per bot instance
         self.__animes = self.__db.animes[Var.BOT_TOKEN.split(':')[0]]
 
     # ----------------- Basic Anime DB ----------------- #
@@ -14,35 +14,43 @@ class MongoDB:
         doc = await self.__animes.find_one({'_id': ani_id})
         return doc or {}
 
-    async def saveAnime(self, ani_id, ep, qual, post_id=None):
+    async def saveAnime(self, ani_id, ep, qual, msg_id=None, post_id=None):
         """
-        Save episode info + msg_id of posted message.
-        ep stored as str (Mongo keys must be str).
+        Save that this quality has been uploaded for (ani_id, ep).
+        msg_id = message id of the uploaded file in Var.FILE_STORE (so we can copy it later).
+        post_id = the post message id in Var.MAIN_CHANNEL (the post where buttons live).
         """
         ep_key = str(ep)
         anime = await self.getAnime(ani_id)
+        episodes = anime.get('episodes', {})
 
-        # base structure
-        ep_data = anime.get(ep_key, {})
-        qual_data = ep_data.get(qual, {})
+        ep_doc = episodes.get(ep_key, {})
+        qual_doc = ep_doc.get(qual, {})
 
-        # preserve existing users, just mark as available
-        ep_data[qual] = qual_data  
+        if msg_id is not None:
+            qual_doc['msg_id'] = int(msg_id)
+        qual_doc['uploaded'] = True
 
-        update_fields = {ep_key: ep_data}
-        if post_id:
-            update_fields["msg_id"] = post_id
+        ep_doc[qual] = qual_doc
+        episodes[ep_key] = ep_doc
 
-        await self.__animes.update_one(
-            {'_id': ani_id},
-            {'$set': update_fields},
-            upsert=True
-        )
+        update = {'episodes': episodes}
+        if post_id is not None:
+            update['post_id'] = int(post_id)
+
+        await self.__animes.update_one({'_id': ani_id}, {'$set': update}, upsert=True)
+
+    async def getEpisodeFileInfo(self, ani_id, ep, qual):
+        """
+        Return dict for this (ani, ep, qual) — may include 'msg_id', 'uploaded' etc.
+        """
+        anime = await self.getAnime(ani_id)
+        return anime.get('episodes', {}).get(str(ep), {}).get(qual, {})
 
     async def getAllAnime(self):
         cursor = self.__animes.find({})
-        docs = await cursor.to_list(length=None)
-        return {doc["_id"]: doc for doc in docs if "_id" in doc}
+        all_docs = await cursor.to_list(length=None)
+        return {doc["_id"]: doc for doc in all_docs if "_id" in doc}
 
     async def reboot(self):
         await self.__animes.drop()
@@ -50,29 +58,32 @@ class MongoDB:
     # ------------- Per-user delivery tracking ------------- #
     async def hasUserReceived(self, ani_id, ep, qual, user_id):
         """
-        Check if user has already received this episode in this quality.
+        Check if a user has already received this file (per quality).
+        Stores user ids under episodes.{ep}.{qual}.users -> { "<user_id>": True }
         """
-        anime = await self.getAnime(ani_id)
-        ep_data = anime.get(str(ep), {})
-        qual_data = ep_data.get(qual, {})
-        return qual_data.get(str(user_id), False)
+        ep_info = (await self.getEpisodeFileInfo(ani_id, ep, qual)) or {}
+        users = ep_info.get('users', {})
+        return str(user_id) in users
 
     async def markUserReceived(self, ani_id, ep, qual, user_id):
         """
-        Mark that user has received this file.
+        Mark that a user received this file.
         """
+        ani_doc = await self.getAnime(ani_id)
+        episodes = ani_doc.get('episodes', {})
         ep_key = str(ep)
-        anime = await self.getAnime(ani_id)
-        ep_data = anime.get(ep_key, {})
-        qual_data = ep_data.get(qual, {})
+        ep_doc = episodes.get(ep_key, {})
+        qual_doc = ep_doc.get(qual, {})
 
-        qual_data[str(user_id)] = True
-        ep_data[qual] = qual_data
+        users = qual_doc.get('users', {})
+        users[str(user_id)] = True
+        qual_doc['users'] = users
 
-        await self.__animes.update_one(
-            {'_id': ani_id},
-            {'$set': {ep_key: ep_data}},
-            upsert=True
-        )
+        ep_doc[qual] = qual_doc
+        episodes[ep_key] = ep_doc
 
+        await self.__animes.update_one({'_id': ani_id}, {'$set': {'episodes': episodes}}, upsert=True)
+
+
+# singleton db
 db = MongoDB(Var.MONGO_URI, "FZAutoAnimes")
