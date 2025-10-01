@@ -5,6 +5,7 @@ from os import path as ospath
 from aiofiles.os import remove as aioremove
 from traceback import format_exc
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from pyrogram import ChatPermissions
 
 from bot import bot, bot_loop, Var, ani_cache, ffQueue, ffLock, ff_queued
 from bot.core.database import db
@@ -68,7 +69,7 @@ async def get_animes(name, torrent, force=False):
             f"‣ <b>Anime Name :</b> <b><i>{name}</i></b>\n\n<i>Downloading...</i>"
         )
 
-        # Download with a few retries
+        # Download torrent
         dl = None
         for attempt in range(3):
             dl = await TorDownloader("./downloads").download(torrent, name)
@@ -79,10 +80,8 @@ async def get_animes(name, torrent, force=False):
 
         if not dl or not ospath.exists(dl):
             await rep.report(f"File Download Incomplete after retries, Skipping", "error")
-            try:
-                await stat_msg.delete()
-            except Exception:
-                pass
+            try: await stat_msg.delete()
+            except Exception: pass
             return
 
         post_id = post_msg.id
@@ -97,6 +96,9 @@ async def get_animes(name, torrent, force=False):
         await ffLock.acquire()
         btns = []
 
+        # store paths for deletion after each upload
+        encoded_paths = []
+
         for qual in Var.QUALS:
             filename = await aniInfo.get_upname(qual)
             await editMessage(stat_msg, f"‣ <b>Anime Name :</b> <b><i>{name}</i></b>\n\n<i>Ready to Encode...</i>")
@@ -105,12 +107,11 @@ async def get_animes(name, torrent, force=False):
 
             try:
                 out_path = await FFEncoder(stat_msg, dl, filename, qual).start_encode()
+                encoded_paths.append(out_path)
             except Exception as e:
                 await rep.report(f"Error: {e}, Cancelled, Retry Again!", "error")
-                try:
-                    await stat_msg.delete()
-                except Exception:
-                    pass
+                try: await stat_msg.delete()
+                except Exception: pass
                 ffLock.release()
                 return
 
@@ -119,51 +120,46 @@ async def get_animes(name, torrent, force=False):
             await asyncio.sleep(1.0)
 
             try:
-                # upload to Var.FILE_STORE via TgUploader
-                uploaded_msg = await TgUploader(stat_msg).upload(out_path, qual)
+                uploaded_msg = await TgUploader(stat_msg).upload(out_path, qual, protect_content=True)
             except Exception as e:
                 await rep.report(f"Error uploading: {e}", "error")
-                try:
-                    await stat_msg.delete()
-                except Exception:
-                    pass
+                try: await stat_msg.delete()
+                except Exception: pass
                 ffLock.release()
                 return
 
-            await rep.report(f"✅ Successfully Uploaded {qual} File to Tg...", "info")
-            msg_id = uploaded_msg.id  # message id in FILE_STORE
-            # craft compact callback_data — only ids (short)
+            msg_id = uploaded_msg.id
             callback_data = f"sendfile|{ani_id}|{ep_no}|{qual}|{msg_id}"
 
-            # make button and update post (keep buttons small)
             if post_msg:
                 btn_label = btn_formatter.get(qual, qual)
                 new_btn = InlineKeyboardButton(f"{btn_label} - {convertBytes(uploaded_msg.document.file_size)}",
                                                callback_data=callback_data)
-                # append on new row (safe)
                 btns.append([new_btn])
                 try:
                     await editMessage(post_msg, post_msg.caption.html if post_msg.caption else "", InlineKeyboardMarkup(btns))
                 except Exception as e:
                     await rep.report(f"Failed to edit post buttons: {e}", "error")
 
-            # save into DB: msg_id (in FILE_STORE) + post_id of main post
+            # Save DB
             await db.saveAnime(ani_id, ep_no, qual, msg_id=msg_id, post_id=post_id)
 
-            # extra tasks
+            # Delete encoded file immediately after upload
+            try:
+                await aioremove(out_path)
+            except Exception:
+                pass
+
+            # Optional: extra tasks
             bot_loop.create_task(extra_utils(msg_id, out_path))
 
         ffLock.release()
-        try:
-            await stat_msg.delete()
-        except Exception:
-            pass
+        try: await stat_msg.delete()
+        except Exception: pass
 
-        # delete original torrent/download to save space
-        try:
-            await aioremove(dl)
-        except Exception:
-            pass
+        # Delete original torrent file after all qualities are encoded
+        try: await aioremove(dl)
+        except Exception: pass
 
         ani_cache.setdefault('completed', set()).add(ani_id)
 
@@ -173,50 +169,60 @@ async def get_animes(name, torrent, force=False):
 
 async def handle_file_click(callback_query, ani_id, ep, qual, msg_id):
     """
-    Handles callback_data: sendfile|ani_id|ep|qual|msg_id
-    - First click -> copy file from Var.FILE_STORE to user, mark in DB.
-    - Subsequent clicks -> send website link (PM).
+    First click → copy file to user (protect_content), auto-delete confirmation.
+    Second click → send website link.
     """
     try:
         user_id = callback_query.from_user.id
     except Exception:
-        # fallback if callback_query has no from_user
         return await callback_query.answer("Unable to determine user.", show_alert=True)
 
-    # quickly respond to Telegram (avoid "query timeout")
-    await callback_query.answer()  
+    await callback_query.answer()  # quick response
 
-    # check DB if user already received
     already = await db.hasUserReceived(ani_id, ep, qual, user_id)
 
     if not already:
-        # copy the stored file message from FILE_STORE to user
         try:
-            await bot.copy_message(chat_id=user_id, from_chat_id=Var.FILE_STORE, message_id=int(msg_id))
+            # Copy file to user with protect_content=True
+            await bot.copy_message(
+                chat_id=user_id,
+                from_chat_id=Var.FILE_STORE,
+                message_id=int(msg_id),
+                protect_content=True
+            )
             await db.markUserReceived(ani_id, ep, qual, user_id)
-            # optional: send short confirmation
-            try:
-                await bot.send_message(chat_id=user_id, text="✅ File delivered. It will be auto-deleted by the bot after a while.")
-            except Exception:
-                pass
+
+            if getattr(Var, "AUTO_DEL", "False").lower() == "true":
+                confirm_msg = await bot.send_message(
+                    chat_id=user_id,
+                    text=f"✅ File delivered. It will be auto-deleted in {Var.DEL_TIMER} seconds."
+                )
+                # Auto-delete confirmation
+                bot_loop.create_task(auto_delete(confirm_msg, int(Var.DEL_TIMER)))
         except Exception as e:
-            # common cause: user hasn't started bot in PM; instruct them
             err = str(e)
-            if "bot can't initiate conversation with the user" in err or "user is deactivated" in err or "forbidden" in err.lower():
-                await callback_query.message.reply_text("⚠️ I couldn't send the file — please start the bot in private chat first (/start).")
+            if "bot can't initiate conversation" in err.lower() or "forbidden" in err.lower():
+                await callback_query.message.reply_text("⚠️ Start the bot in private first (/start).")
             else:
                 await callback_query.message.reply_text(f"Error sending file: {e}")
     else:
-        # user already received -> send website link via PM
-        website = getattr(Var, "WEBSITE", None) or getattr(Var, "WEBSITE_URL", None) or None
+        website = getattr(Var, "WEBSITE", None) or getattr(Var, "WEBSITE_URL", None)
         if website:
             try:
                 await bot.send_message(chat_id=user_id, text=f"🔗 Visit the website for re-download or mirrors:\n{website}")
             except Exception:
-                # cannot PM -> fallback to answering callback with short text
                 await callback_query.message.reply_text(f"🔗 Visit: {website}")
         else:
             await callback_query.message.reply_text("🔗 Website not configured.")
+
+
+async def auto_delete(msg, delay: int):
+    await asyncio.sleep(delay)
+    try:
+        await msg.delete()
+    except Exception:
+        pass
+
 
 async def extra_utils(msg_id, out_path):
     try:
