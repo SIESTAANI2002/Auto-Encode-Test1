@@ -1,3 +1,6 @@
+
+    # Start the bot loop
+    bot_loop.run_until_complete(main())
 # main.py
 from asyncio import create_task, create_subprocess_exec, all_tasks, sleep as asleep
 from aiofiles import open as aiopen
@@ -9,10 +12,11 @@ from sys import executable
 from signal import SIGKILL
 
 from bot import bot, Var, bot_loop, sch, LOGS, ffQueue, ffLock, ffpids_cache, ff_queued
-from bot.core.auto_animes import fetch_animes, handle_file_click
+from bot.core.auto_animes import fetch_animes
 from bot.core.func_utils import clean_up, new_task
 from bot.modules.up_posts import upcoming_animes
-from bot.core.database import db  # ensure db import here (no circular import with auto_animes)
+from bot.core.database import db  # merged DB usage
+import asyncio
 
 # ------------------ Restart command ------------------
 @bot.on_message(command('restart') & user(Var.ADMINS))
@@ -22,7 +26,7 @@ async def restart_cmd(client, message):
     if sch.running:
         sch.shutdown(wait=False)
     await clean_up()
-    if len(ffpids_cache) != 0:
+    if len(ffpids_cache) != 0: 
         for pid in ffpids_cache:
             try:
                 LOGS.info(f"Process ID : {pid}")
@@ -44,28 +48,69 @@ async def restart():
         except Exception as e:
             LOGS.error(e)
 
-
 # ---------------- Inline Button Handler ----------------
 @bot.on_callback_query()
 async def inline_button_handler(client, callback_query: CallbackQuery):
-    data = callback_query.data or ""
-    if not data:
-        return await callback_query.answer()
-
+    """
+    Handles clicks on inline buttons (1080p/720p).
+    First click -> send file, mark in DB.
+    Second click -> send website link instead.
+    """
+    data = callback_query.data
     if data.startswith("sendfile|"):
-        # format: sendfile|{ani_id}|{ep}|{qual}|{msg_id}
-        parts = data.split("|")
-        if len(parts) != 5:
-            return await callback_query.answer("Invalid button data.", show_alert=True)
-        _, ani_id, ep, qual, msg_id = parts
         try:
+            _, ani_id, ep, qual = data.split("|")
+            user_id = callback_query.from_user.id
             ep = int(ep)
-            msg_id = int(msg_id)
-        except Exception:
-            return await callback_query.answer("Invalid episode or message id.", show_alert=True)
 
-        # forward to handler in auto_animes.py
-        await handle_file_click(callback_query, ani_id, ep, qual, msg_id)
+            # check DB if user already received
+            already = await db.hasUserReceived(ani_id, ep, qual, user_id)
+            anime = await db.getAnime(ani_id)
+            msg_id = anime.get("msg_id")
+
+            if not msg_id:
+                return await callback_query.answer("File not found!", show_alert=True)
+
+            if already:
+                # send website link instead
+                link = f"{Var.WEBSITE_URL}/anime/{ani_id}/ep{ep}"  # adjust URL format if needed
+                await callback_query.message.reply(
+                    f"🔗 You already received this file.\nHere’s the website link: {link}"
+                )
+            else:
+                # forward/copy file from channel with protect_content
+                try:
+                    msg = await bot.copy_message(
+                        chat_id=user_id,
+                        from_chat_id=Var.MAIN_CHANNEL,
+                        message_id=msg_id,
+                        protect_content=True
+                    )
+                    await db.markUserReceived(ani_id, ep, qual, user_id)
+
+                    # Send info message that will auto-delete
+                    info_msg = await callback_query.message.reply(
+                        f"✅ File delivered. It will be auto-deleted in {Var.DEL_TIMER} seconds."
+                    )
+
+                    # Delete after DEL_TIMER seconds if AUTO_DEL enabled
+                    if Var.AUTO_DEL.upper() == "TRUE":
+                        bot_loop.create_task(auto_delete_message(info_msg.chat.id, info_msg.id, int(Var.DEL_TIMER)))
+
+                    await callback_query.answer("✅ File sent to you!", show_alert=True)
+                except Exception as e:
+                    await callback_query.answer(f"Error sending file: {e}", show_alert=True)
+
+        except Exception as e:
+            await callback_query.answer(f"Error: {e}", show_alert=True)
+
+
+async def auto_delete_message(chat_id, msg_id, delay):
+    await asyncio.sleep(delay)
+    try:
+        await bot.delete_messages(chat_id, msg_id)
+    except Exception:
+        pass
 
 # ------------------ Queue loop ------------------
 async def queue_loop():
