@@ -1,4 +1,5 @@
-from asyncio import create_task, create_subprocess_exec, create_subprocess_shell, run as asyrun, all_tasks, gather, sleep as asleep
+# main.py
+from asyncio import create_task, create_subprocess_exec, all_tasks, sleep as asleep
 from aiofiles import open as aiopen
 from pyrogram import idle
 from pyrogram.filters import command, user
@@ -9,8 +10,9 @@ from signal import SIGKILL
 
 from bot import bot, Var, bot_loop, sch, LOGS, ffQueue, ffLock, ffpids_cache, ff_queued
 from bot.core.auto_animes import fetch_animes
-from bot.core.func_utils import clean_up, new_task, editMessage
+from bot.core.func_utils import clean_up, new_task
 from bot.modules.up_posts import upcoming_animes
+from bot.core.database import db  # merged DB usage
 
 # ------------------ Restart command ------------------
 @bot.on_message(command('restart') & user(Var.ADMINS))
@@ -42,19 +44,48 @@ async def restart():
         except Exception as e:
             LOGS.error(e)
 
-
 # ---------------- Inline Button Handler ----------------
 @bot.on_callback_query()
-async def inline_button_handler(client, callback_query):
+async def inline_button_handler(client, callback_query: CallbackQuery):
     """
-    Handles clicks on inline buttons (1080p/720p) for anime episodes.
-    Sends file one-time per user, otherwise sends website link.
+    Handles clicks on inline buttons (1080p/720p).
+    First click -> send file, mark in DB.
+    Second click -> send website link instead.
     """
     data = callback_query.data
     if data.startswith("sendfile|"):
         try:
-            _, ani_id, ep, qual, file_path = data.split("|")
-            await handle_file_click(callback_query, ani_id, int(ep), qual, file_path)
+            _, ani_id, ep, qual = data.split("|")
+            user_id = callback_query.from_user.id
+            ep = int(ep)
+
+            # check DB if user already received
+            already = await db.hasUserReceived(ani_id, ep, qual, user_id)
+            anime = await db.getAnime(ani_id)
+            msg_id = anime.get("msg_id")
+
+            if not msg_id:
+                return await callback_query.answer("File not found!", show_alert=True)
+
+            if already:
+                # send website link instead
+                link = f"{Var.WEBSITE_URL}/anime/{ani_id}/ep{ep}"  # <-- adjust URL format if needed
+                await callback_query.message.reply(
+                    f"🔗 You already received this file.\nHere’s the website link: {link}"
+                )
+            else:
+                # forward/copy file from channel
+                try:
+                    msg = await bot.copy_message(
+                        chat_id=user_id,
+                        from_chat_id=Var.MAIN_CHANNEL,
+                        message_id=msg_id
+                    )
+                    await db.markUserReceived(ani_id, ep, qual, user_id)
+                    await callback_query.answer("✅ File sent to you!", show_alert=True)
+                except Exception as e:
+                    await callback_query.answer(f"Error sending file: {e}", show_alert=True)
+
         except Exception as e:
             await callback_query.answer(f"Error: {e}", show_alert=True)
 
