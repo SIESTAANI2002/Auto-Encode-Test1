@@ -1,7 +1,3 @@
-
-    # Start the bot loop
-    bot_loop.run_until_complete(main())
-# main.py
 from asyncio import create_task, create_subprocess_exec, all_tasks, sleep as asleep
 from aiofiles import open as aiopen
 from pyrogram import idle
@@ -16,7 +12,6 @@ from bot.core.auto_animes import fetch_animes
 from bot.core.func_utils import clean_up, new_task
 from bot.modules.up_posts import upcoming_animes
 from bot.core.database import db  # merged DB usage
-import asyncio
 
 # ------------------ Restart command ------------------
 @bot.on_message(command('restart') & user(Var.ADMINS))
@@ -51,11 +46,6 @@ async def restart():
 # ---------------- Inline Button Handler ----------------
 @bot.on_callback_query()
 async def inline_button_handler(client, callback_query: CallbackQuery):
-    """
-    Handles clicks on inline buttons (1080p/720p).
-    First click -> send file, mark in DB.
-    Second click -> send website link instead.
-    """
     data = callback_query.data
     if data.startswith("sendfile|"):
         try:
@@ -73,44 +63,25 @@ async def inline_button_handler(client, callback_query: CallbackQuery):
 
             if already:
                 # send website link instead
-                link = f"{Var.WEBSITE_URL}/anime/{ani_id}/ep{ep}"  # adjust URL format if needed
+                link = f"{Var.WEBSITE_URL}/anime/{ani_id}/ep{ep}"
                 await callback_query.message.reply(
                     f"🔗 You already received this file.\nHere’s the website link: {link}"
                 )
             else:
-                # forward/copy file from channel with protect_content
+                # forward/copy file from channel
                 try:
-                    msg = await bot.copy_message(
+                    await bot.copy_message(
                         chat_id=user_id,
                         from_chat_id=Var.MAIN_CHANNEL,
-                        message_id=msg_id,
-                        protect_content=True
+                        message_id=msg_id
                     )
                     await db.markUserReceived(ani_id, ep, qual, user_id)
-
-                    # Send info message that will auto-delete
-                    info_msg = await callback_query.message.reply(
-                        f"✅ File delivered. It will be auto-deleted in {Var.DEL_TIMER} seconds."
-                    )
-
-                    # Delete after DEL_TIMER seconds if AUTO_DEL enabled
-                    if Var.AUTO_DEL.upper() == "TRUE":
-                        bot_loop.create_task(auto_delete_message(info_msg.chat.id, info_msg.id, int(Var.DEL_TIMER)))
-
-                    await callback_query.answer("✅ File sent to you!", show_alert=True)
+                    await callback_query.answer("✅ File sent to you!\nIt will be auto-deleted in 10 minutes.", show_alert=True)
                 except Exception as e:
                     await callback_query.answer(f"Error sending file: {e}", show_alert=True)
 
         except Exception as e:
             await callback_query.answer(f"Error: {e}", show_alert=True)
-
-
-async def auto_delete_message(chat_id, msg_id, delay):
-    await asyncio.sleep(delay)
-    try:
-        await bot.delete_messages(chat_id, msg_id)
-    except Exception:
-        pass
 
 # ------------------ Queue loop ------------------
 async def queue_loop():
