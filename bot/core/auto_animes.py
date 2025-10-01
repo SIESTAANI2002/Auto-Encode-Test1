@@ -46,7 +46,7 @@ async def get_animes(name, torrent, force=False):
             return
 
         ani_data = await db.getAnime(ani_id)
-        qual_data = ani_data.get(ep_no) if ani_data else None
+        qual_data = ani_data.get(str(ep_no)) if ani_data else None
         if not force and qual_data and all(qual_data.get(q) for q in Var.QUALS):
             return
 
@@ -122,19 +122,18 @@ async def get_animes(name, torrent, force=False):
             await rep.report(f"✅ Successfully Uploaded {qual} File to Tg...", "info")
             msg_id = msg.id
 
-            # Telegram buttons: send file first time, website next time
-            if post_msg:
-                btn_label = btn_formatter.get(qual, qual)
-                new_btn = InlineKeyboardButton(
-                    f"{btn_label} - {convertBytes(msg.document.file_size)}",
-                    callback_data=f"sendfile|{ani_id}|{ep_no}|{qual}|{msg_id}"
-                )
-                btns.append([new_btn])
-                await editMessage(
-                    post_msg,
-                    post_msg.caption.html if post_msg.caption else "",
-                    InlineKeyboardMarkup(btns)
-                )
+            # Telegram buttons: one-time file send
+            btn_label = btn_formatter.get(qual, qual)
+            new_btn = InlineKeyboardButton(
+                f"{btn_label} - {convertBytes(msg.document.file_size)}",
+                callback_data=f"sendfile|{ani_id}|{ep_no}|{qual}|{msg_id}"
+            )
+            btns.append([new_btn])
+            await editMessage(
+                post_msg,
+                post_msg.caption.html if post_msg.caption else "",
+                InlineKeyboardMarkup(btns)
+            )
 
             await db.saveAnime(ani_id, ep_no, qual, post_id)
             bot_loop.create_task(extra_utils(msg_id, out_path))
@@ -148,27 +147,15 @@ async def get_animes(name, torrent, force=False):
         await rep.report(format_exc(), "error")
 
 
-# ---------------- Inline Button Click Handler ----------------
-@bot.on_callback_query()
-async def inline_button_handler(client, callback_query):
-    data = callback_query.data
-    if data.startswith("sendfile|"):
-        parts = data.split("|")
-        if len(parts) != 5:
-            await callback_query.answer("Error: Invalid button data!", show_alert=True)
-            return
-        _, ani_id, ep, qual, msg_id = parts
-        await handle_file_click(callback_query, ani_id, int(ep), qual, msg_id)
-
-
 async def handle_file_click(callback_query, ani_id, ep, qual, msg_id):
     """
-    Sends file first time, sends website link next time
+    Sends file first time, sends website link next time.
     """
     user_id = callback_query.from_user.id
     received = await db.hasUserReceived(ani_id, ep, qual, user_id)
 
     if not received:
+        # Mark user as received and forward file
         await db.markUserReceived(ani_id, ep, qual, user_id)
         try:
             msg_id = int(msg_id)
@@ -180,10 +167,14 @@ async def handle_file_click(callback_query, ani_id, ep, qual, msg_id):
         except Exception as e:
             await callback_query.answer(f"Error sending file: {e}", show_alert=True)
     else:
+        # Send website link as separate message
         await callback_query.answer(
-            "You already received the file! Visit website instead.",
-            url=Var.WEBSITE,
+            "You already received the file!",
             show_alert=True
+        )
+        await bot.send_message(
+            chat_id=user_id,
+            text=f"Visit our website for more: {Var.WEBSITE}"
         )
 
 
