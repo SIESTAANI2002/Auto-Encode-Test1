@@ -1,3 +1,4 @@
+# main.py
 from asyncio import create_task, create_subprocess_exec, all_tasks, sleep as asleep
 from aiofiles import open as aiopen
 from pyrogram import idle
@@ -11,7 +12,7 @@ from bot import bot, Var, bot_loop, sch, LOGS, ffQueue, ffLock, ffpids_cache, ff
 from bot.core.auto_animes import fetch_animes
 from bot.core.func_utils import clean_up, new_task
 from bot.modules.up_posts import upcoming_animes
-from bot.core.database import db  # merged DB usage
+from bot.core.database import db
 
 # ------------------ Restart command ------------------
 @bot.on_message(command('restart') & user(Var.ADMINS))
@@ -46,19 +47,24 @@ async def restart():
 # ---------------- Inline Button Handler ----------------
 @bot.on_callback_query()
 async def inline_button_handler(client, callback_query: CallbackQuery):
+    """
+    Handles clicks on inline buttons (1080p/720p).
+    First click -> send file with protect_content=True, mark in DB.
+    Second click -> send website link instead.
+    """
     data = callback_query.data
     if data.startswith("sendfile|"):
         try:
-            _, ani_id, ep, qual = data.split("|")
+            _, ani_id, ep, qual, msg_id = data.split("|")
             user_id = callback_query.from_user.id
             ep = int(ep)
+            msg_id = int(msg_id)
 
-            # check DB if user already received
             already = await db.hasUserReceived(ani_id, ep, qual, user_id)
             anime = await db.getAnime(ani_id)
-            msg_id = anime.get("msg_id")
+            main_msg_id = anime.get("msg_id")
 
-            if not msg_id:
+            if not main_msg_id:
                 return await callback_query.answer("File not found!", show_alert=True)
 
             if already:
@@ -68,20 +74,38 @@ async def inline_button_handler(client, callback_query: CallbackQuery):
                     f"🔗 You already received this file.\nHere’s the website link: {link}"
                 )
             else:
-                # forward/copy file from channel
+                # copy/forward file to user with protect_content=True
                 try:
                     await bot.copy_message(
                         chat_id=user_id,
                         from_chat_id=Var.MAIN_CHANNEL,
-                        message_id=msg_id
+                        message_id=msg_id,
+                        protect_content=True
                     )
                     await db.markUserReceived(ani_id, ep, qual, user_id)
-                    await callback_query.answer("✅ File sent to you!\nIt will be auto-deleted in 10 minutes.", show_alert=True)
+
+                    # Info message with deletion
+                    if Var.AUTO_DEL == "True":
+                        info_msg = await callback_query.message.reply(
+                            f"✅ File delivered. It will be auto-deleted in {Var.DEL_TIMER} seconds."
+                        )
+                        # Auto-delete after DEL_TIMER seconds
+                        create_task(auto_delete_message(info_msg.chat.id, info_msg.id, int(Var.DEL_TIMER)))
+                    await callback_query.answer("✅ File sent!", show_alert=True)
                 except Exception as e:
                     await callback_query.answer(f"Error sending file: {e}", show_alert=True)
 
         except Exception as e:
             await callback_query.answer(f"Error: {e}", show_alert=True)
+
+
+async def auto_delete_message(chat_id, msg_id, delay):
+    await asleep(delay)
+    try:
+        await bot.delete_messages(chat_id, msg_id)
+    except Exception:
+        pass
+
 
 # ------------------ Queue loop ------------------
 async def queue_loop():
@@ -95,6 +119,7 @@ async def queue_loop():
             async with ffLock:
                 ffQueue.task_done()
         await asleep(10)
+
 
 # ------------------ Main ------------------
 async def main():
@@ -112,6 +137,7 @@ async def main():
         task.cancel()
     await clean_up()
     LOGS.info('Finished AutoCleanUp !!')
+
 
 if __name__ == '__main__':
     import threading
