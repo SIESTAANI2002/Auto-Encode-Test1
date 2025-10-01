@@ -35,6 +35,7 @@ async def restart_cmd(client, message):
         await f.write(f"{rmessage.chat.id}\n{rmessage.id}\n")
     execl(executable, executable, "-m", "bot")
 
+
 async def restart():
     if ospath.isfile(".restartmsg"):
         with open(".restartmsg") as f:
@@ -43,6 +44,7 @@ async def restart():
             await bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text="<i>Restarted !</i>")
         except Exception as e:
             LOGS.error(e)
+
 
 # ---------------- Inline Button Handler ----------------
 @bot.on_callback_query()
@@ -55,30 +57,32 @@ async def inline_button_handler(client, callback_query: CallbackQuery):
     data = callback_query.data
     if data.startswith("sendfile|"):
         try:
-            _, ani_id, ep, qual = data.split("|")
+            # Correct unpacking: 5 parts in callback_data
+            _, ani_id, ep, qual, msg_id = data.split("|")
             user_id = callback_query.from_user.id
             ep = int(ep)
+            msg_id = int(msg_id)
 
-            # check DB if user already received
+            # Check if user already received this file
             already = await db.hasUserReceived(ani_id, ep, qual, user_id)
             anime = await db.getAnime(ani_id)
-            msg_id = anime.get("msg_id")
+            post_msg_id = anime.get("msg_id")
 
-            if not msg_id:
+            if not post_msg_id:
                 return await callback_query.answer("File not found!", show_alert=True)
 
             if already:
-                # send website link instead
-                link = f"{Var.WEBSITE_URL}/anime/{ani_id}/ep{ep}"  # <-- adjust URL format if needed
+                # Send website link as a normal message
+                link = f"{Var.WEBSITE}/anime/{ani_id}/ep{ep}"  # Adjust URL format
                 await callback_query.message.reply(
                     f"🔗 You already received this file.\nHere’s the website link: {link}"
                 )
             else:
-                # forward/copy file from channel
+                # Forward/copy file from channel
                 try:
-                    msg = await bot.copy_message(
+                    await bot.copy_message(
                         chat_id=user_id,
-                        from_chat_id=Var.MAIN_CHANNEL,
+                        from_chat_id=Var.FILE_STORE,
                         message_id=msg_id
                     )
                     await db.markUserReceived(ani_id, ep, qual, user_id)
@@ -86,8 +90,12 @@ async def inline_button_handler(client, callback_query: CallbackQuery):
                 except Exception as e:
                     await callback_query.answer(f"Error sending file: {e}", show_alert=True)
 
+        except ValueError:
+            # Handle unpacking errors
+            await callback_query.answer("Callback data format invalid!", show_alert=True)
         except Exception as e:
             await callback_query.answer(f"Error: {e}", show_alert=True)
+
 
 # ------------------ Queue loop ------------------
 async def queue_loop():
@@ -101,6 +109,7 @@ async def queue_loop():
             async with ffLock:
                 ffQueue.task_done()
         await asleep(10)
+
 
 # ------------------ Main ------------------
 async def main():
@@ -118,6 +127,7 @@ async def main():
         task.cancel()
     await clean_up()
     LOGS.info('Finished AutoCleanUp !!')
+
 
 if __name__ == '__main__':
     import threading
