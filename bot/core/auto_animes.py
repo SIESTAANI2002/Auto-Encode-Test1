@@ -1,5 +1,6 @@
 # bot/core/auto_animes.py
 import asyncio
+import hashlib
 from asyncio import Event
 from os import path as ospath
 from aiofiles.os import remove as aioremove
@@ -20,35 +21,14 @@ btn_formatter = {
     '480': '48𝟬𝗽'
 }
 
-# ---------------- Handle File Click ----------------
-async def handle_file_click(callback_query, ani_id, ep, qual, file_path):
-    user_id = callback_query.from_user.id
 
-    # Already received? → send website link
-    if await db.hasUserReceived(ani_id, ep, qual, user_id):
-        website = getattr(Var, "WEBSITE", None)
-        if website:
-            await callback_query.message.reply(
-                f"🔗 <b>Watch/Download here:</b>\n{website}",
-                disable_web_page_preview=True
-            )
-        await callback_query.answer("Redirecting to website...", show_alert=False)
-        return
-
-    # First time → send the file
-    try:
-        await bot.send_document(
-            user_id,
-            document=file_path,
-            caption=f"🎬 Episode {ep} [{qual}p]"
-        )
-        await db.markUserReceived(ani_id, ep, qual, user_id)
-        await callback_query.answer("File sent to your DM ✅", show_alert=False)
-    except Exception as e:
-        await callback_query.answer(f"Error: {e}", show_alert=True)
+# ---------------- Callback Key Helper ---------------- #
+def make_callback_key(ani_id, ep, qual):
+    raw = f"{ani_id}|{ep}|{qual}"
+    return hashlib.md5(raw.encode()).hexdigest()[:16]  # 16 chars only
 
 
-# ---------------- Fetching Loop ----------------
+# ---------------- Fetch Loop ---------------- #
 async def fetch_animes():
     await rep.report("Fetch Animes Started !!", "info")
     while True:
@@ -59,7 +39,7 @@ async def fetch_animes():
                     bot_loop.create_task(get_animes(info.title, info.link))
 
 
-# ---------------- Main Worker ----------------
+# ---------------- Anime Handler ---------------- #
 async def get_animes(name, torrent, force=False):
     try:
         aniInfo = TextEditor(name)
@@ -152,12 +132,22 @@ async def get_animes(name, torrent, force=False):
             await rep.report(f"✅ Successfully Uploaded {qual} File to Tg...", "info")
             msg_id = msg.id
 
-            # Inline button with callback
+            # generate safe key
+            key = make_callback_key(ani_id, ep_no, qual)
+            ani_cache.setdefault("callbacks", {})[key] = {
+                "ani_id": ani_id,
+                "ep": ep_no,
+                "qual": qual,
+                "file_path": out_path,
+                "msg_id": msg_id
+            }
+
+            # Telegram buttons (short callback_data)
             if post_msg:
                 btn_label = btn_formatter.get(qual, qual)
                 new_btn = InlineKeyboardButton(
                     f"{btn_label} - {convertBytes(msg.document.file_size)}",
-                    callback_data=f"sendfile|{ani_id}|{ep_no}|{qual}|{out_path}"
+                    callback_data=f"sf|{key}"
                 )
                 if len(btns) != 0 and len(btns[-1]) == 1:
                     btns[-1].append(new_btn)
@@ -187,7 +177,7 @@ async def get_animes(name, torrent, force=False):
         await rep.report(format_exc(), "error")
 
 
-# ---------------- Backup ----------------
+# ---------------- Extra Utils ---------------- #
 async def extra_utils(msg_id, out_path):
     try:
         msg = await bot.get_messages(Var.FILE_STORE, message_ids=msg_id)
