@@ -9,10 +9,10 @@ from sys import executable
 from signal import SIGKILL
 
 from bot import bot, Var, bot_loop, sch, LOGS, ffQueue, ffLock, ffpids_cache, ff_queued
-from bot.core.auto_animes import fetch_animes
+from bot.core.auto_animes import fetch_animes, handle_file_click
 from bot.core.func_utils import clean_up, new_task
 from bot.modules.up_posts import upcoming_animes
-from bot.core.database import db  # merged DB usage
+from bot.core.database import db  # ensure db import here (no circular import with auto_animes)
 
 # ------------------ Restart command ------------------
 @bot.on_message(command('restart') & user(Var.ADMINS))
@@ -22,7 +22,7 @@ async def restart_cmd(client, message):
     if sch.running:
         sch.shutdown(wait=False)
     await clean_up()
-    if len(ffpids_cache) != 0: 
+    if len(ffpids_cache) != 0:
         for pid in ffpids_cache:
             try:
                 LOGS.info(f"Process ID : {pid}")
@@ -34,7 +34,6 @@ async def restart_cmd(client, message):
     async with aiopen(".restartmsg", "w") as f:
         await f.write(f"{rmessage.chat.id}\n{rmessage.id}\n")
     execl(executable, executable, "-m", "bot")
-
 
 async def restart():
     if ospath.isfile(".restartmsg"):
@@ -49,53 +48,24 @@ async def restart():
 # ---------------- Inline Button Handler ----------------
 @bot.on_callback_query()
 async def inline_button_handler(client, callback_query: CallbackQuery):
-    """
-    Handles clicks on inline buttons (1080p/720p).
-    First click -> send file, mark in DB.
-    Second click -> send website link instead.
-    """
-    data = callback_query.data
+    data = callback_query.data or ""
+    if not data:
+        return await callback_query.answer()
+
     if data.startswith("sendfile|"):
+        # format: sendfile|{ani_id}|{ep}|{qual}|{msg_id}
+        parts = data.split("|")
+        if len(parts) != 5:
+            return await callback_query.answer("Invalid button data.", show_alert=True)
+        _, ani_id, ep, qual, msg_id = parts
         try:
-            # Correct unpacking: 5 parts in callback_data
-            _, ani_id, ep, qual, msg_id = data.split("|")
-            user_id = callback_query.from_user.id
             ep = int(ep)
             msg_id = int(msg_id)
+        except Exception:
+            return await callback_query.answer("Invalid episode or message id.", show_alert=True)
 
-            # Check if user already received this file
-            already = await db.hasUserReceived(ani_id, ep, qual, user_id)
-            anime = await db.getAnime(ani_id)
-            post_msg_id = anime.get("msg_id")
-
-            if not post_msg_id:
-                return await callback_query.answer("File not found!", show_alert=True)
-
-            if already:
-                # Send website link as a normal message
-                link = f"{Var.WEBSITE}/anime/{ani_id}/ep{ep}"  # Adjust URL format
-                await callback_query.message.reply(
-                    f"🔗 You already received this file.\nHere’s the website link: {link}"
-                )
-            else:
-                # Forward/copy file from channel
-                try:
-                    await bot.copy_message(
-                        chat_id=user_id,
-                        from_chat_id=Var.FILE_STORE,
-                        message_id=msg_id
-                    )
-                    await db.markUserReceived(ani_id, ep, qual, user_id)
-                    await callback_query.answer("✅ File sent to you!", show_alert=True)
-                except Exception as e:
-                    await callback_query.answer(f"Error sending file: {e}", show_alert=True)
-
-        except ValueError:
-            # Handle unpacking errors
-            await callback_query.answer("Callback data format invalid!", show_alert=True)
-        except Exception as e:
-            await callback_query.answer(f"Error: {e}", show_alert=True)
-
+        # forward to handler in auto_animes.py
+        await handle_file_click(callback_query, ani_id, ep, qual, msg_id)
 
 # ------------------ Queue loop ------------------
 async def queue_loop():
@@ -109,7 +79,6 @@ async def queue_loop():
             async with ffLock:
                 ffQueue.task_done()
         await asleep(10)
-
 
 # ------------------ Main ------------------
 async def main():
@@ -127,7 +96,6 @@ async def main():
         task.cancel()
     await clean_up()
     LOGS.info('Finished AutoCleanUp !!')
-
 
 if __name__ == '__main__':
     import threading
