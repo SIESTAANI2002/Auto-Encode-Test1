@@ -1,15 +1,13 @@
 # bot/core/auto_animes.py
 import asyncio
-import hashlib
 from asyncio import Event
 from os import path as ospath
 from aiofiles.os import remove as aioremove
 from traceback import format_exc
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from bot import bot, bot_loop, Var, ani_cache, ffQueue, ffLock, ff_queued
+from bot import bot, bot_loop, Var, ani_cache, ffQueue, ffLock, ff_queued, db
 from .tordownload import TorDownloader
-from .database import db
 from .func_utils import getfeed, encode, editMessage, sendMessage, convertBytes
 from .text_utils import TextEditor
 from .ffencoder import FFEncoder
@@ -18,17 +16,50 @@ from .reporter import rep
 
 btn_formatter = {
     '1080': '1080p',
-    '480': '48𝟬𝗽'
+    '480': '480p'
 }
 
+# ------------------ Build Button ------------------
+async def build_keyboard(ani_id, ep_no, qual, file_path, file_size):
+    file_btn = InlineKeyboardButton(
+        f"{btn_formatter.get(qual, qual)} - {convertBytes(file_size)}",
+        callback_data=f"sendfile|{ani_id}|{ep_no}|{qual}|{file_path}"
+    )
+    website_btn = InlineKeyboardButton("Visit Website", url=Var.WEBSITE)
+    return InlineKeyboardMarkup([[file_btn], [website_btn]])
 
-# ---------------- Callback Key Helper ---------------- #
-def make_callback_key(ani_id, ep, qual):
-    raw = f"{ani_id}|{ep}|{qual}"
-    return hashlib.md5(raw.encode()).hexdigest()[:16]  # 16 chars only
+
+# ------------------ Callback Handler ------------------
+@bot.on_callback_query()
+async def handle_file_click(callback_query):
+    data = callback_query.data
+    user_id = callback_query.from_user.id
+
+    if not data.startswith("sendfile|"):
+        return
+
+    try:
+        _, ani_id, ep_no, qual, file_path = data.split("|")
+        ep_no = int(ep_no)
+
+        received = await db.hasUserReceived(ani_id, ep_no, qual, user_id)
+        if not received:
+            # Send file to user
+            await bot.send_document(user_id, file_path, caption=f"{qual} - Episode {ep_no}")
+            await db.markUserReceived(ani_id, ep_no, qual, user_id)
+            await callback_query.answer("✅ File sent! Visit website for more.", show_alert=True)
+        else:
+            # Already received → open website
+            await callback_query.answer(
+                "You already received the file! Visit website instead.",
+                url=Var.WEBSITE,
+                show_alert=True
+            )
+    except Exception as e:
+        await callback_query.answer(f"Error: {e}", show_alert=True)
 
 
-# ---------------- Fetch Loop ---------------- #
+# ------------------ Fetch Animes ------------------
 async def fetch_animes():
     await rep.report("Fetch Animes Started !!", "info")
     while True:
@@ -39,7 +70,7 @@ async def fetch_animes():
                     bot_loop.create_task(get_animes(info.title, info.link))
 
 
-# ---------------- Anime Handler ---------------- #
+# ------------------ Main Processing ------------------
 async def get_animes(name, torrent, force=False):
     try:
         aniInfo = TextEditor(name)
@@ -55,7 +86,7 @@ async def get_animes(name, torrent, force=False):
             return
 
         ani_data = await db.getAnime(ani_id)
-        qual_data = ani_data.get(ep_no) if ani_data else None
+        qual_data = ani_data.get(str(ep_no)) if ani_data else None
         if not force and qual_data and all(qual_data.get(q) for q in Var.QUALS):
             return
 
@@ -77,17 +108,17 @@ async def get_animes(name, torrent, force=False):
             f"‣ <b>Anime Name :</b> <b><i>{name}</i></b>\n\n<i>Downloading...</i>"
         )
 
-        # Retry download up to 3 times if incomplete
+        # Retry download up to 3 times
         dl = None
         for attempt in range(3):
             dl = await TorDownloader("./downloads").download(torrent, name)
             if dl and ospath.exists(dl):
                 break
-            await rep.report(f"Download failed or incomplete. Retrying ({attempt+1}/3)...", "warning")
+            await rep.report(f"Download failed. Retrying ({attempt+1}/3)...", "warning")
             await asyncio.sleep(5)
 
         if not dl or not ospath.exists(dl):
-            await rep.report(f"File Download Incomplete after 3 retries, Skipping", "error")
+            await rep.report(f"File Download Incomplete, Skipping", "error")
             await stat_msg.delete()
             return
 
@@ -112,7 +143,7 @@ async def get_animes(name, torrent, force=False):
             try:
                 out_path = await FFEncoder(stat_msg, dl, filename, qual).start_encode()
             except Exception as e:
-                await rep.report(f"Error: {e}, Cancelled, Retry Again!", "error")
+                await rep.report(f"Error: {e}, Cancelled!", "error")
                 await stat_msg.delete()
                 ffLock.release()
                 return
@@ -124,60 +155,35 @@ async def get_animes(name, torrent, force=False):
             try:
                 msg = await TgUploader(stat_msg).upload(out_path, qual)
             except Exception as e:
-                await rep.report(f"Error: {e}, Cancelled, Retry Again!", "error")
+                await rep.report(f"Error: {e}, Cancelled!", "error")
                 await stat_msg.delete()
                 ffLock.release()
                 return
 
             await rep.report(f"✅ Successfully Uploaded {qual} File to Tg...", "info")
-            msg_id = msg.id
 
-            # generate safe key
-            key = make_callback_key(ani_id, ep_no, qual)
-            ani_cache.setdefault("callbacks", {})[key] = {
-                "ani_id": ani_id,
-                "ep": ep_no,
-                "qual": qual,
-                "file_path": out_path,
-                "msg_id": msg_id
-            }
-
-            # Telegram buttons (short callback_data)
-            if post_msg:
-                btn_label = btn_formatter.get(qual, qual)
-                new_btn = InlineKeyboardButton(
-                    f"{btn_label} - {convertBytes(msg.document.file_size)}",
-                    callback_data=f"sf|{key}"
-                )
-                if len(btns) != 0 and len(btns[-1]) == 1:
-                    btns[-1].append(new_btn)
-                else:
-                    btns.append([new_btn])
-                await editMessage(
-                    post_msg,
-                    post_msg.caption.html if post_msg.caption else "",
-                    InlineKeyboardMarkup(btns)
-                )
+            # Build keyboard with first-click file / second-click website
+            keyboard = await build_keyboard(ani_id, ep_no, qual, out_path, msg.document.file_size)
+            await editMessage(post_msg, post_msg.caption.html if post_msg.caption else "", keyboard)
 
             # Save in DB
             await db.saveAnime(ani_id, ep_no, qual, post_id)
 
-            # Extra utils (backup etc.)
-            bot_loop.create_task(extra_utils(msg_id, out_path))
+            # Extra utils
+            bot_loop.create_task(extra_utils(msg.id, out_path))
 
         ffLock.release()
         await stat_msg.delete()
 
-        # Cleanup original file after all qualities
+        # Cleanup original download
         await aioremove(dl)
-
         ani_cache.setdefault('completed', set()).add(ani_id)
 
     except Exception:
         await rep.report(format_exc(), "error")
 
 
-# ---------------- Extra Utils ---------------- #
+# ------------------ Extra Utils ------------------
 async def extra_utils(msg_id, out_path):
     try:
         msg = await bot.get_messages(Var.FILE_STORE, message_ids=msg_id)
