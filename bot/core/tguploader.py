@@ -1,4 +1,5 @@
-# bot/core/tguploader.py
+# bot/core/tg_upload.py
+
 from time import time, sleep
 from traceback import format_exc
 from math import floor
@@ -8,24 +9,26 @@ from pyrogram.errors import FloodWait
 from bot import bot, Var
 from .func_utils import editMessage, convertBytes, convertTime
 from .reporter import rep
-from .gdrive_uploader import upload_to_drive  # ✅ Import Drive uploader
-from bot.core.database import db  # DB access
+from .database import db
 
 
 class TgUploader:
-    def __init__(self, message, ani_id=None, ep_no=None, qual=None):
+    def __init__(self, message, ani_id=None, ep=None):
         self.cancelled = False
         self.message = message
         self.__name = ""
-        self.__qual = qual
+        self.__qual = ""
         self.__client = bot
         self.__start = time()
         self.__updater = time()
-        # optional info to save msg_id after upload
-        self.ani_id = ani_id
-        self.ep_no = ep_no
+        self.__ani_id = ani_id
+        self.__ep = ep
 
     async def upload(self, path, qual, **kwargs):
+        """
+        Upload file to Telegram FILE_STORE.
+        After upload, save msg_id in DB for reuse.
+        """
         self.__name = ospath.basename(path)
         self.__qual = qual
         try:
@@ -49,19 +52,12 @@ class TgUploader:
                     **kwargs
                 )
 
-            # ✅ Save msg_id to DB if ani_id/ep_no provided
-            if self.ani_id and self.ep_no:
-                await db.saveAnime(self.ani_id, self.ep_no, qual, msg_id=msg.id)
-
             await rep.report("[INFO] ✅ Successfully Uploaded File to Telegram", "info")
 
-            # Upload to Google Drive
-            drive_link = await upload_to_drive(path)
-            if drive_link:
-                await self.__client.send_message(
-                    chat_id=Var.LOG_CHANNEL,
-                    text=f"✅ <b>{self.__name}</b> also uploaded to <b>Google Drive</b>\n\n🔗 {drive_link}"
-                )
+            # ✅ Save msg_id into DB
+            if self.__ani_id and self.__ep is not None:
+                await db.saveAnime(self.__ani_id, self.__ep, self.__qual, msg_id=msg.id)
+                print(f"[UPLOAD] ani_id={self.__ani_id}, ep={self.__ep}, qual={self.__qual}, msg_id={msg.id}")
 
             return msg
 
@@ -80,8 +76,8 @@ class TgUploader:
         if (now - self.__updater) >= 7 or current == total:
             self.__updater = now
             percent = round(current / total * 100, 2)
-            speed = current / diff if diff > 0 else 0
-            eta = round((total - current) / speed) if speed > 0 else 0
+            speed = current / diff
+            eta = round((total - current) / speed)
             bar = floor(percent / 8) * "█" + (12 - floor(percent / 8)) * "▒"
             progress_str = f"""‣ <b>Anime Name :</b> <b><i>{self.__name}</i></b>
 
