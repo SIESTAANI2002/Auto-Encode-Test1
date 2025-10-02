@@ -149,7 +149,7 @@ async def get_animes(name, torrent, force=False):
                 InlineKeyboardMarkup(btns)
             )
 
-            # Save in DB
+            # Save in DB per episode quality
             await db.saveAnime(ani_id, ep_no, qual, msg_id)
 
             # Extra utils (backup etc.)
@@ -180,10 +180,9 @@ async def handle_start(client, message, start_payload):
     user_id = message.from_user.id
 
     # Check in DB if user already received this anime
-    user_record = await db.getAnime(ani_id)
-    already_received = user_record.get("users", {}).get(str(user_id), False)
+    already_received = await db.get_user_anime(user_id, ani_id)
 
-    if already_received:
+    if already_received and already_received.get("got_file", False):
         # Second hit → send website link
         await message.reply(f"🎬 You already received this anime!\nVisit: https://yourwebsite.com")
         return
@@ -212,10 +211,8 @@ async def handle_start(client, message, start_payload):
     except:
         pass
 
-    # Save in DB that this user has received this anime
-    user_data = user_record.get("users", {})
-    user_data[str(user_id)] = True
-    await db.saveAnime(ani_id, "users", user_data)
+    # Mark that user received this anime
+    await db.mark_user_anime(user_id, ani_id)
 
 # ----------------------
 # Extra utils
