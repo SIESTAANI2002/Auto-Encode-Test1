@@ -6,16 +6,16 @@ from os import path as ospath, execl, kill
 from sys import executable
 from signal import SIGKILL
 from pyrogram import filters
+import base64
 
 from bot import bot, Var, bot_loop, sch, LOGS, ffQueue, ffLock, ffpids_cache, ff_queued
-from bot.core.auto_animes import fetch_animes, handle_start  # added handle_start
-from bot.core.func_utils import clean_up, new_task, editMessage, decode  # added decode
+from bot.core.auto_animes import fetch_animes, handle_start
+from bot.core.func_utils import clean_up, new_task
 from bot.modules.up_posts import upcoming_animes
 
 # ----------------------
 # /start command handler
 # ----------------------
-
 @bot.on_message(filters.command("start"))
 async def start(client, message):
     if len(message.command) > 1:
@@ -28,7 +28,7 @@ async def start(client, message):
             await message.reply("Input Link is Invalid for Usage !")
             return
 
-        # Call your handle_start function
+        # Call handle_start function from auto_animes
         await handle_start(client, message, decoded_payload)
 
     else:
