@@ -184,7 +184,7 @@ async def handle_start(client, message, start_payload):
 
     if already_received and already_received.get("got_file", False):
         # Second hit → send website link
-        await message.reply(f"🎬 You already received this anime!\nVisit: https://yourwebsite.com")
+        await message.reply(f"🎬 You already received this anime!\nVisit: {Var.WEBSITE}")
         return
 
     # First hit → send the file
