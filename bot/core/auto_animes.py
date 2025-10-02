@@ -236,6 +236,10 @@ async def handle_start(client, message, start_payload):
             await sent.delete()
         except:
             pass
+      asyncio.create_task(auto_delete(sent))
+
+        # Optional: notify user
+      await message.reply(f"âš ï¸ This file will be automatically deleted in {Var.DEL_TIMER} seconds.")
 
     # Mark user as received
     await db.mark_user_anime(user_id, ani_id)
