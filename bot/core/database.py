@@ -19,9 +19,6 @@ class MongoDB:
         if post_id:
             await self.__animes.update_one({'_id': ani_id}, {'$set': {"msg_id": post_id}}, upsert=True)
 
-    async def reboot(self):
-        await self.__animes.drop()
-
     # ------------------------
     # New functions for user hit tracking
     # ------------------------
@@ -36,3 +33,8 @@ class MongoDB:
             {'$set': {'got_file': True}},
             upsert=True
         )
+
+    async def reboot(self):
+        await self.__animes.drop()
+
+db = MongoDB(Var.MONGO_URI, "FZAutoAnimes")
