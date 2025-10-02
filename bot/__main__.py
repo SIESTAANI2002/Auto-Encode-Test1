@@ -57,6 +57,7 @@ async def inline_button_handler(client, callback_query: CallbackQuery):
         parts = data.split("|")
         if len(parts) != 5:
             return await callback_query.answer("Invalid button data.", show_alert=True)
+
         _, ani_id, ep, qual, msg_id = parts
         try:
             ep = int(ep)
@@ -64,8 +65,8 @@ async def inline_button_handler(client, callback_query: CallbackQuery):
         except Exception:
             return await callback_query.answer("Invalid episode or message id.", show_alert=True)
 
-        # forward to handler in auto_animes.py
-        await handle_file_click(callback_query, ani_id, ep, qual, msg_id)
+        # Forward to PM handler (first click → file, second → website)
+        await handle_file_click_pm(callback_query, ani_id, ep, qual, msg_id)
 
 # ------------------ Queue loop ------------------
 async def queue_loop():
