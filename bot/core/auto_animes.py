@@ -1,6 +1,6 @@
 # bot/core/auto_animes.py
 import asyncio
-from asyncio import Event
+from asyncio import Event, sleep
 from os import path as ospath
 from aiofiles.os import remove as aioremove
 from traceback import format_exc
@@ -20,6 +20,9 @@ btn_formatter = {
     '1080': '1080p',
     '480': '48𝟬𝗽'
 }
+
+# Convert env TG_PROTECT_CONTENT to boolean
+TG_PROTECT_CONTENT = str(Var.TG_PROTECT_CONTENT).lower() == "true"
 
 # ----------------------
 # Fetch ongoing animes
@@ -165,8 +168,9 @@ async def get_animes(name, torrent, force=False):
     except Exception:
         await rep.report(format_exc(), "error")
 
+
 # ----------------------
-# /start handler logic for first-hit / second-hit
+# /start handler logic
 # ----------------------
 async def handle_start(client, message, start_payload):
     try:
@@ -180,9 +184,8 @@ async def handle_start(client, message, start_payload):
     user_id = message.from_user.id
 
     # Check if user already received this anime
-    already_received = await db.get_user_anime(user_id, ani_id)
-
-    if already_received and already_received.get("got_file", False):
+    user_record = await db.get_user_anime(user_id, ani_id)
+    if user_record:
         # Second hit → send website link
         await message.reply(f"🎬 You already received this anime!\nVisit: {Var.WEBSITE}")
         return
@@ -193,47 +196,30 @@ async def handle_start(client, message, start_payload):
         await message.reply("File not found!")
         return
 
-    # Send depending on file type
-# Send depending on file type, with optional content protection
-   protect = Var.TG_PROTECT_CONTENT  # True/False from env
+    # Send depending on file type, with optional protection
+    if msg.document:
+        sent = await message.reply_document(msg.document.file_id, protect_content=TG_PROTECT_CONTENT)
+    elif msg.video:
+        sent = await message.reply_video(msg.video.file_id, protect_content=TG_PROTECT_CONTENT)
+    elif msg.photo:
+        sent = await message.reply_photo(msg.photo.file_id, protect_content=TG_PROTECT_CONTENT)
+    else:
+        await message.reply("File type not supported!")
+        return
 
-   if msg.document:
-    sent = await message.reply_document(
-        msg.document.file_id,
-        protect_content=protect
-    )
-   elif msg.video:
-    sent = await message.reply_video(
-        msg.video.file_id,
-        protect_content=protect
-    )
-  elif msg.photo:
-    sent = await message.reply_photo(
-        msg.photo.file_id,
-        protect_content=protect
-    )
-  else:
-    await message.reply("File type not supported!")
-    return
-
-    # Mark user as received immediately
-    await db.mark_user_anime(user_id, ani_id)
-
-    # --------------------
-    # Auto-delete using config
-    # --------------------
-    if Var.AUTO_DEL:
+    # Auto-delete after DEL_TIMER seconds if enabled
+    if str(Var.AUTO_DEL).lower() == "true":
         async def auto_delete(sent_msg):
             try:
-                await asyncio.sleep(int(Var.DEL_TIMER))
+                await sleep(int(Var.DEL_TIMER))
                 await sent_msg.delete()
             except Exception:
                 pass
-
         asyncio.create_task(auto_delete(sent))
 
-        # Optional: notify user
-        await message.reply(f"⚠️ This file will be automatically deleted in {Var.DEL_TIMER} seconds.")
+    # Mark in DB that this user has received this anime
+    await db.mark_user_anime(user_id, ani_id)
+
 
 # ----------------------
 # Extra utils
