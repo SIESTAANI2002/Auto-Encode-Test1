@@ -160,50 +160,54 @@ async def get_animes(name, torrent, force=False):
 # /start handler logic for first-hit / second-hit
 # ----------------------
 async def handle_start(client, message, start_payload):
-    """
-    start_payload example: "anime-<ani_id>-<msg_id>"
-    """
+    # Example payload: "anime-183965-5286"
     try:
-        if not start_payload.startswith("anime-"):
-            return
-
         parts = start_payload.split("-")
         ani_id = parts[1]
         msg_id = int(parts[2])
-        user_id = message.from_user.id
+    except:
+        await message.reply("Invalid payload!")
+        return
 
-        # Check MongoDB if user already got this anime
-        user_anime = await db.get_user_anime(user_id, ani_id)
+    user_id = message.from_user.id
 
-        if not user_anime:
-            # First hit → send file
-            msg = await bot.get_messages(Var.MAIN_CHANNEL, message_ids=int(msg_id))
-            if msg and msg.document:
-                sent = await message.reply_document(msg.document.file_id)
-                await message.reply_text("File will be Auto Deleted in 1m, forward to Saved Messages.")
+    # Check in DB if user already received this anime
+    user_record = await db.getAnime(ani_id)
+    already_received = user_record.get("users", {}).get(str(user_id), False)
 
-                # Mark user+anime in DB
-                await db.mark_user_anime(user_id, ani_id)
+    if already_received:
+        # Second hit → send website link
+        await message.reply(f"🎬 You already received this anime!\nVisit: https://yourwebsite.com")
+        return
 
-                # Auto delete after 60 seconds
-                await asyncio.sleep(60)
-                try:
-                    await client.delete_messages(message.chat.id, sent.id)
-                except:
-                    pass
-        else:
-            # Already got file → send website link
-            button = InlineKeyboardMarkup(
-                [[InlineKeyboardButton("Visit Website 🌐", url="https://yourwebsite.com")]]
-            )
-            await message.reply_text(
-                "You already received this anime. Check out our website:",
-                reply_markup=button
-            )
+    # First hit → send the file
+    msg = await client.get_messages(Var.MAIN_CHANNEL, message_ids=msg_id)
+    if not msg:
+        await message.reply("File not found!")
+        return
 
-    except Exception:
-        await rep.report(format_exc(), "error")
+    # Send depending on file type
+    if msg.document:
+        sent = await message.reply_document(msg.document.file_id)
+    elif msg.video:
+        sent = await message.reply_video(msg.video.file_id)
+    elif msg.photo:
+        sent = await message.reply_photo(msg.photo.file_id)
+    else:
+        await message.reply("File type not supported!")
+        return
 
+    # Optional: auto-delete after 1 minute
+    try:
+        await sleep(60)
+        await sent.delete()
+    except:
+        pass
+
+    # Save in DB that this user has received this anime
+    user_data = user_record.get("users", {})
+    user_data[str(user_id)] = True
+    await db.saveAnime(ani_id, "users", user_data)
 
 async def extra_utils(msg_id, out_path):
     try:
