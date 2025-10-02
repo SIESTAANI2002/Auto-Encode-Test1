@@ -11,7 +11,7 @@ from pyrogram.errors import RPCError
 from bot import bot, bot_loop, Var, ani_cache, ffQueue, ffLock, ff_queued
 from bot.core.database import db
 from .tordownload import TorDownloader
-from .func_utils import getfeed, encode, editMessage, sendMessage, convertBytes
+from .func_utils import getfeed, editMessage, sendMessage, convertBytes
 from .text_utils import TextEditor
 from .ffencoder import FFEncoder
 from .tguploader import TgUploader
@@ -23,7 +23,6 @@ btn_formatter = {
     '480': '480p'
 }
 
-# Read TG_PROTECT_CONTENT from env, default True
 PROTECT_CONTENT = True if getattr(Var, "TG_PROTECT_CONTENT", "1") == "1" else False
 
 # ----------------- Fetch Animes -----------------
@@ -35,6 +34,7 @@ async def fetch_animes():
             for link in Var.RSS_ITEMS:
                 if (info := await getfeed(link, 0)):
                     bot_loop.create_task(get_animes(info.title, info.link))
+
 
 # ----------------- Get & Encode Anime -----------------
 async def get_animes(name, torrent, force=False):
@@ -130,6 +130,9 @@ async def get_animes(name, torrent, force=False):
                 return
 
             msg_id = uploaded_msg.id
+            # Save DB immediately
+            await db.saveAnime(ani_id, ep_no, qual, msg_id=msg_id, post_id=post_id)
+
             # Button URL triggers bot PM with start payload
             btn_label = btn_formatter.get(qual, qual)
             btns.append([InlineKeyboardButton(
@@ -141,9 +144,6 @@ async def get_animes(name, torrent, force=False):
                 await editMessage(post_msg, post_msg.caption.html if post_msg.caption else "", InlineKeyboardMarkup(btns))
             except Exception as e:
                 await rep.report(f"Failed to edit post buttons: {e}", "error")
-
-            # Save DB
-            await db.saveAnime(ani_id, ep_no, qual, msg_id=msg_id, post_id=post_id)
 
             bot_loop.create_task(extra_utils(msg_id, out_path))
 
@@ -169,7 +169,6 @@ async def start_pm_handler(client, message):
     except:
         return
 
-    # Parse payload from deep-link
     if len(message.command) < 2:
         await message.reply("Welcome! Use the buttons in channel posts to get files.")
         return
@@ -196,31 +195,25 @@ async def start_pm_handler(client, message):
             await message.reply("🔗 Website not configured.")
 
 
-# ----------------- Send File PM (Fixed) -----------------
+# ----------------- Send File PM (with msg_id retry) -----------------
 async def send_file_pm(user_id, ani_id, ep_no, qual):
     try:
-        file_msg = None
-        retries = 3
-        for attempt in range(retries):
-            try:
-                file_info = await db.getEpisodeFileInfo(ani_id, ep_no, qual)
-                msg_id = file_info.get('msg_id')
-                if not msg_id:
-                    raise ValueError("msg_id not found in DB")
-                file_msg = await bot.get_messages(Var.FILE_STORE, message_ids=int(msg_id))
-                if file_msg:
-                    break
-            except Exception:
-                if attempt < retries - 1:
-                    await asyncio.sleep(1.5)
-                else:
-                    raise
+        # Retry to get msg_id from DB
+        msg_id = None
+        for _ in range(5):
+            file_info = await db.getEpisodeFileInfo(ani_id, ep_no, qual)
+            msg_id = file_info.get('msg_id')
+            if msg_id:
+                break
+            await asyncio.sleep(2)
 
-        if not file_msg:
+        if not msg_id:
             await bot.send_message(user_id, "⏳ File is being prepared. Please try again in a few minutes.")
             return
 
+        file_msg = await bot.get_messages(Var.FILE_STORE, message_ids=msg_id)
         sent_msg = None
+
         if file_msg.document:
             sent_msg = await bot.send_document(
                 chat_id=user_id,
@@ -241,9 +234,9 @@ async def send_file_pm(user_id, ani_id, ep_no, qual):
             delay = int(getattr(Var, "DEL_TIMER", 300))
             bot_loop.create_task(auto_delete_message(user_id, sent_msg.id, delay))
 
-    except Exception as e:
+    except RPCError as e:
         err = str(e)
-        if "bot can't initiate conversation" in err.lower() or "forbidden" in err.lower():
+        if "bot can't initiate conversation" in err or "user is deactivated" in err or "forbidden" in err.lower():
             return
         else:
             await bot.send_message(user_id, f"Error sending file: {e}")
