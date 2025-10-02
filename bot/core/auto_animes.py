@@ -23,7 +23,6 @@ btn_formatter = {
     '480': '480p'
 }
 
-# Read TG_PROTECT_CONTENT from env, default True
 PROTECT_CONTENT = True if getattr(Var, "TG_PROTECT_CONTENT", "1") == "1" else False
 
 # ----------------- Fetch Animes -----------------
@@ -131,8 +130,7 @@ async def get_animes(name, torrent, force=False):
                 return
 
             msg_id = uploaded_msg.id
-            # Button URL triggers bot PM with start payload
-            callback_data = f"sendfile|{ani_id}|{ep_no}|{qual}|{msg_id}"
+            # Deep-link button
             btn_label = btn_formatter.get(qual, qual)
             btns.append([InlineKeyboardButton(
                 f"{btn_label} - {convertBytes(uploaded_msg.document.file_size)}",
@@ -144,16 +142,13 @@ async def get_animes(name, torrent, force=False):
             except Exception as e:
                 await rep.report(f"Failed to edit post buttons: {e}", "error")
 
-            # Save DB
             await db.saveAnime(ani_id, ep_no, qual, msg_id=msg_id, post_id=post_id)
-
             bot_loop.create_task(extra_utils(msg_id, out_path))
 
         ffLock.release()
         try: await stat_msg.delete()
         except: pass
 
-        # Delete original torrent
         try: await aioremove(dl)
         except: pass
 
@@ -171,7 +166,6 @@ async def start_pm_handler(client, message):
     except:
         return
 
-    # Parse payload from deep-link
     if len(message.command) < 2:
         await message.reply("Welcome! Use the buttons in channel posts to get files.")
         return
@@ -187,10 +181,8 @@ async def start_pm_handler(client, message):
     already = await db.hasUserReceived(ani_id, ep_no, qual, user_id)
 
     if not already:
-        # First click → send file
         await send_file_pm(user_id, ani_id, ep_no, qual)
     else:
-        # Subsequent clicks → website link
         website = getattr(Var, "WEBSITE", None) or getattr(Var, "WEBSITE_URL", None)
         if website:
             await message.reply(f"🔗 Visit website for re-download:\n{website}")
@@ -201,8 +193,12 @@ async def start_pm_handler(client, message):
 # ----------------- Send File PM -----------------
 async def send_file_pm(user_id, ani_id, ep_no, qual):
     try:
-        # Get uploaded file
-        file_msg = await bot.get_messages(Var.FILE_STORE, message_ids=await db.get_msg_id(ani_id, ep_no, qual))
+        ep_info = await db.getEpisodeFileInfo(ani_id, ep_no, qual)
+        msg_id = ep_info.get('msg_id')
+        if not msg_id:
+            return
+
+        file_msg = await bot.get_messages(Var.FILE_STORE, message_ids=msg_id)
         sent_msg = None
 
         if file_msg.document:
@@ -228,7 +224,6 @@ async def send_file_pm(user_id, ani_id, ep_no, qual):
     except RPCError as e:
         err = str(e)
         if "bot can't initiate conversation" in err or "user is deactivated" in err or "forbidden" in err.lower():
-            # User never started bot → they must click deep-link again
             return
         else:
             await bot.send_message(user_id, f"Error sending file: {e}")
