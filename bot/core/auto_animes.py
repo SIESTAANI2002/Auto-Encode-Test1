@@ -210,7 +210,7 @@ async def handle_start(client, message, start_payload):
     # --------------------
     # Auto-delete using config
     # --------------------
-    if Var.AUTO_DEL.lower() == "true":
+    if Var.AUTO_DEL:
         async def auto_delete(sent_msg):
             try:
                 await asyncio.sleep(int(Var.DEL_TIMER))
