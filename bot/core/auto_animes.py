@@ -23,7 +23,6 @@ btn_formatter = {
     '480': '480p'
 }
 
-# Read TG_PROTECT_CONTENT from env, default True
 PROTECT_CONTENT = True if getattr(Var, "TG_PROTECT_CONTENT", "1") == "1" else False
 
 # ----------------- Fetch Animes -----------------
@@ -131,10 +130,9 @@ async def get_animes(name, torrent, force=False):
                 return
 
             msg_id = uploaded_msg.id
-            # Button URL triggers bot PM with start payload
-            btn_label = btn_formatter.get(qual, qual)
+            callback_data = f"sendfile|{ani_id}|{ep_no}|{qual}|{msg_id}"
             btns.append([InlineKeyboardButton(
-                f"{btn_label} - {convertBytes(uploaded_msg.document.file_size)}",
+                f"{btn_formatter.get(qual, qual)} - {convertBytes(uploaded_msg.document.file_size)}",
                 url=f"https://t.me/{Var.BOT_USERNAME}?start={ani_id}_{ep_no}_{qual}"
             )])
 
@@ -143,16 +141,12 @@ async def get_animes(name, torrent, force=False):
             except Exception as e:
                 await rep.report(f"Failed to edit post buttons: {e}", "error")
 
-            # Save DB immediately after upload
             await db.saveAnime(ani_id, ep_no, qual, msg_id=msg_id, post_id=post_id)
-
             bot_loop.create_task(extra_utils(msg_id, out_path))
 
         ffLock.release()
         try: await stat_msg.delete()
         except: pass
-
-        # Delete original torrent
         try: await aioremove(dl)
         except: pass
 
@@ -182,9 +176,26 @@ async def start_pm_handler(client, message):
         await message.reply("Invalid payload.")
         return
 
+    # Fetch file info from DB
     ep_info = await db.getEpisodeFileInfo(ani_id, ep_no, qual)
     uploaded = ep_info.get("uploaded", False)
     msg_id = ep_info.get("msg_id", 0)
+
+    # Fallback: use post_id if msg_id missing
+    if not msg_id:
+        post_id = ep_info.get("post_id", 0)
+        if post_id:
+            try:
+                post_msg = await bot.get_messages(Var.MAIN_CHANNEL, message_ids=post_id)
+                if post_msg.document:
+                    msg_id = post_msg.document.file_id
+                elif post_msg.video:
+                    msg_id = post_msg.video.file_id
+                if msg_id:
+                    uploaded = True
+                    await db.saveAnime(ani_id, ep_no, qual, msg_id=msg_id)
+            except Exception:
+                pass
 
     if not uploaded or not msg_id:
         await message.reply("⏳ File is being prepared. Please try again in a few minutes.")
@@ -208,10 +219,10 @@ async def send_file_pm(user_id, ani_id, ep_no, qual):
         ep_info = await db.getEpisodeFileInfo(ani_id, ep_no, qual)
         msg_id = ep_info.get("msg_id", 0)
         if not msg_id:
-            return  # File not ready
+            return
 
-        file_msg = await bot.get_messages(Var.FILE_STORE, message_ids=msg_id)
         sent_msg = None
+        file_msg = await bot.get_messages(Var.FILE_STORE, message_ids=msg_id)
 
         if file_msg.document:
             sent_msg = await bot.send_document(
