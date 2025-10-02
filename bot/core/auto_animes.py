@@ -1,6 +1,6 @@
 # bot/core/auto_animes.py
 import asyncio
-from asyncio import Event, sleep
+from asyncio import Event
 from os import path as ospath
 from aiofiles.os import remove as aioremove
 from traceback import format_exc
@@ -34,7 +34,7 @@ async def fetch_animes():
                     bot_loop.create_task(get_animes(info.title, info.link))
 
 # ----------------------
-# Download, encode, upload, create buttons
+# Main function to download, encode, upload and create buttons
 # ----------------------
 async def get_animes(name, torrent, force=False):
     try:
@@ -73,7 +73,7 @@ async def get_animes(name, torrent, force=False):
             f"‣ <b>Anime Name :</b> <b><i>{name}</i></b>\n\n<i>Downloading...</i>"
         )
 
-        # Retry download up to 3 times
+        # Retry download up to 3 times if incomplete
         dl = None
         for attempt in range(3):
             dl = await TorDownloader("./downloads").download(torrent, name)
@@ -128,7 +128,7 @@ async def get_animes(name, torrent, force=False):
             await rep.report(f"✅ Successfully Uploaded {qual} File to Tg...", "info")
             msg_id = msg.id
 
-            # Base64 payload for button
+            # Create Base64 button payload
             payload = f"anime-{ani_id}-{msg_id}"
             encoded_payload = base64.urlsafe_b64encode(payload.encode()).decode()
             link = f"https://t.me/{(await bot.get_me()).username}?start={encoded_payload}"
@@ -149,7 +149,7 @@ async def get_animes(name, torrent, force=False):
                 InlineKeyboardMarkup(btns)
             )
 
-            # Save in DB per episode quality
+            # Save in DB
             await db.saveAnime(ani_id, ep_no, qual, msg_id)
 
             # Extra utils (backup etc.)
@@ -157,15 +157,16 @@ async def get_animes(name, torrent, force=False):
 
         ffLock.release()
         await stat_msg.delete()
+
+        # Cleanup original file after all qualities
         await aioremove(dl)
         ani_cache.setdefault('completed', set()).add(ani_id)
 
     except Exception:
         await rep.report(format_exc(), "error")
 
-
 # ----------------------
-# /start handler for first-hit / second-hit
+# /start handler logic for first-hit / second-hit
 # ----------------------
 async def handle_start(client, message, start_payload):
     try:
@@ -192,7 +193,7 @@ async def handle_start(client, message, start_payload):
         await message.reply("File not found!")
         return
 
-    # Send file depending on type
+    # Send depending on file type
     if msg.document:
         sent = await message.reply_document(msg.document.file_id)
     elif msg.video:
@@ -206,13 +207,21 @@ async def handle_start(client, message, start_payload):
     # Mark user as received immediately
     await db.mark_user_anime(user_id, ani_id)
 
-    # Auto-delete after 1 minute
-    try:
-        await sleep(60)
-        await sent.delete()
-    except:
-        pass
+    # --------------------
+    # Auto-delete using config
+    # --------------------
+    if Var.AUTO_DEL.lower() == "true":
+        async def auto_delete(sent_msg):
+            try:
+                await asyncio.sleep(int(Var.DEL_TIMER))
+                await sent_msg.delete()
+            except Exception:
+                pass
 
+        asyncio.create_task(auto_delete(sent))
+
+        # Optional: notify user
+        await message.reply(f"⚠️ This file will be automatically deleted in {Var.DEL_TIMER} seconds.")
 
 # ----------------------
 # Extra utils
