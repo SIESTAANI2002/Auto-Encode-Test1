@@ -194,15 +194,27 @@ async def handle_start(client, message, start_payload):
         return
 
     # Send depending on file type
-    if msg.document:
-        sent = await message.reply_document(msg.document.file_id)
-    elif msg.video:
-        sent = await message.reply_video(msg.video.file_id)
-    elif msg.photo:
-        sent = await message.reply_photo(msg.photo.file_id)
-    else:
-        await message.reply("File type not supported!")
-        return
+# Send depending on file type, with optional content protection
+   protect = Var.TG_PROTECT_CONTENT  # True/False from env
+
+   if msg.document:
+    sent = await message.reply_document(
+        msg.document.file_id,
+        protect_content=protect
+    )
+   elif msg.video:
+    sent = await message.reply_video(
+        msg.video.file_id,
+        protect_content=protect
+    )
+  elif msg.photo:
+    sent = await message.reply_photo(
+        msg.photo.file_id,
+        protect_content=protect
+    )
+  else:
+    await message.reply("File type not supported!")
+    return
 
     # Mark user as received immediately
     await db.mark_user_anime(user_id, ani_id)
