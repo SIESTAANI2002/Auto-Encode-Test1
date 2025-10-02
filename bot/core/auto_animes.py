@@ -172,52 +172,72 @@ async def get_animes(name, torrent, force=False):
 # ----------------------
 # /start handler logic
 # ----------------------
+# ----------------------
+# /start handler logic for first-hit / second-hit
+# ----------------------
 async def handle_start(client, message, start_payload):
     try:
         parts = start_payload.split("-")
         ani_id = parts[1]
         msg_id = int(parts[2])
     except:
-        await message.reply("Invalid payload!")
+        await client.send_message(
+            chat_id=message.chat.id,
+            text="Invalid payload!"
+        )
         return
 
     user_id = message.from_user.id
 
     # Check if user already received this anime
     user_record = await db.get_user_anime(user_id, ani_id)
-    if user_record:
+    if user_record and user_record.get("got_file", False):
         # Second hit → send website link
-        await message.reply(f"🎬 You already received this anime!\nVisit: {Var.WEBSITE}")
+        await client.send_message(
+            chat_id=message.chat.id,
+            text=f"🎬 You already received this anime!\nVisit: {Var.WEBSITE}"
+        )
         return
 
     # First hit → send the file
     msg = await client.get_messages(Var.FILE_STORE, message_ids=msg_id)
     if not msg:
-        await message.reply("File not found!")
+        await client.send_message(chat_id=message.chat.id, text="File not found!")
         return
 
-    # Send depending on file type, with optional protection
+    # Send depending on file type with protect_content
+    TG_PROTECT = getattr(Var, "TG_PROTECT_CONTENT", False)
     if msg.document:
-        sent = await message.reply_document(msg.document.file_id, protect_content=TG_PROTECT_CONTENT)
+        sent = await client.send_document(
+            chat_id=message.chat.id,
+            document=msg.document.file_id,
+            protect_content=TG_PROTECT
+        )
     elif msg.video:
-        sent = await message.reply_video(msg.video.file_id, protect_content=TG_PROTECT_CONTENT)
+        sent = await client.send_video(
+            chat_id=message.chat.id,
+            video=msg.video.file_id,
+            protect_content=TG_PROTECT
+        )
     elif msg.photo:
-        sent = await message.reply_photo(msg.photo.file_id, protect_content=TG_PROTECT_CONTENT)
+        sent = await client.send_photo(
+            chat_id=message.chat.id,
+            photo=msg.photo.file_id,
+            protect_content=TG_PROTECT
+        )
     else:
-        await message.reply("File type not supported!")
+        await client.send_message(chat_id=message.chat.id, text="File type not supported!")
         return
 
-    # Auto-delete after DEL_TIMER seconds if enabled
-    if str(Var.AUTO_DEL).lower() == "true":
-        async def auto_delete(sent_msg):
-            try:
-                await sleep(int(Var.DEL_TIMER))
-                await sent_msg.delete()
-            except Exception:
-                pass
-        asyncio.create_task(auto_delete(sent))
+    # Auto-delete after DEL_TIMER seconds if AUTO_DEL enabled
+    if getattr(Var, "AUTO_DEL", False):
+        try:
+            await asyncio.sleep(int(getattr(Var, "DEL_TIMER", 60)))
+            await sent.delete()
+        except:
+            pass
 
-    # Mark in DB that this user has received this anime
+    # Mark user as received
     await db.mark_user_anime(user_id, ani_id)
 
 
