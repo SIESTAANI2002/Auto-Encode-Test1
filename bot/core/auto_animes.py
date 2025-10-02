@@ -143,7 +143,7 @@ async def get_animes(name, torrent, force=False):
             except Exception as e:
                 await rep.report(f"Failed to edit post buttons: {e}", "error")
 
-            # Save DB
+            # Save DB immediately after upload
             await db.saveAnime(ani_id, ep_no, qual, msg_id=msg_id, post_id=post_id)
 
             bot_loop.create_task(extra_utils(msg_id, out_path))
@@ -170,7 +170,6 @@ async def start_pm_handler(client, message):
     except:
         return
 
-    # Parse payload from deep-link
     if len(message.command) < 2:
         await message.reply("Welcome! Use the buttons in channel posts to get files.")
         return
@@ -183,20 +182,19 @@ async def start_pm_handler(client, message):
         await message.reply("Invalid payload.")
         return
 
-    already = await db.hasUserReceived(ani_id, ep_no, qual, user_id)
     ep_info = await db.getEpisodeFileInfo(ani_id, ep_no, qual)
-    msg_id = ep_info.get('msg_id')
+    uploaded = ep_info.get("uploaded", False)
+    msg_id = ep_info.get("msg_id", 0)
 
-    if not msg_id:
-        # File not ready yet
+    if not uploaded or not msg_id:
         await message.reply("⏳ File is being prepared. Please try again in a few minutes.")
         return
 
+    already = await db.hasUserReceived(ani_id, ep_no, qual, user_id)
+
     if not already:
-        # First click → send file
         await send_file_pm(user_id, ani_id, ep_no, qual)
     else:
-        # Subsequent clicks → website link
         website = getattr(Var, "WEBSITE", None) or getattr(Var, "WEBSITE_URL", None)
         if website:
             await message.reply(f"🔗 Visit website for re-download:\n{website}")
@@ -208,10 +206,9 @@ async def start_pm_handler(client, message):
 async def send_file_pm(user_id, ani_id, ep_no, qual):
     try:
         ep_info = await db.getEpisodeFileInfo(ani_id, ep_no, qual)
-        msg_id = ep_info.get('msg_id')
+        msg_id = ep_info.get("msg_id", 0)
         if not msg_id:
-            # Extra safety check
-            return
+            return  # File not ready
 
         file_msg = await bot.get_messages(Var.FILE_STORE, message_ids=msg_id)
         sent_msg = None
@@ -239,7 +236,6 @@ async def send_file_pm(user_id, ani_id, ep_no, qual):
     except RPCError as e:
         err = str(e)
         if "bot can't initiate conversation" in err or "user is deactivated" in err or "forbidden" in err.lower():
-            # User never started bot → they must click deep-link again
             return
         else:
             await bot.send_message(user_id, f"Error sending file: {e}")
