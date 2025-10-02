@@ -67,13 +67,6 @@ async def inline_button_handler(client, callback_query: CallbackQuery):
         # forward to handler in auto_animes.py
         await handle_file_click(callback_query, ani_id, ep, qual, msg_id)
 
-@bot.on_message(filters.private & filters.command("start"))
-async def start_handler(client, message):
-    if message.text.startswith("/start autofile-"):
-        await handle_autofile_start(client, message)
-    else:
-        await message.reply_text("Welcome! Start using the bot via links.")
-
 # ------------------ Queue loop ------------------
 async def queue_loop():
     LOGS.info("Queue Loop Started !!")
