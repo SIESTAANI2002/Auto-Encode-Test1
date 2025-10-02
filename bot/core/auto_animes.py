@@ -34,7 +34,7 @@ async def fetch_animes():
                     bot_loop.create_task(get_animes(info.title, info.link))
 
 # ----------------------
-# Main function to download, encode, upload and create buttons
+# Download, encode, upload, create buttons
 # ----------------------
 async def get_animes(name, torrent, force=False):
     try:
@@ -73,7 +73,7 @@ async def get_animes(name, torrent, force=False):
             f"‣ <b>Anime Name :</b> <b><i>{name}</i></b>\n\n<i>Downloading...</i>"
         )
 
-        # Retry download up to 3 times if incomplete
+        # Retry download up to 3 times
         dl = None
         for attempt in range(3):
             dl = await TorDownloader("./downloads").download(torrent, name)
@@ -128,7 +128,7 @@ async def get_animes(name, torrent, force=False):
             await rep.report(f"✅ Successfully Uploaded {qual} File to Tg...", "info")
             msg_id = msg.id
 
-            # Create Base64 button payload
+            # Base64 payload for button
             payload = f"anime-{ani_id}-{msg_id}"
             encoded_payload = base64.urlsafe_b64encode(payload.encode()).decode()
             link = f"https://t.me/{(await bot.get_me()).username}?start={encoded_payload}"
@@ -157,16 +157,15 @@ async def get_animes(name, torrent, force=False):
 
         ffLock.release()
         await stat_msg.delete()
-
-        # Cleanup original file after all qualities
         await aioremove(dl)
         ani_cache.setdefault('completed', set()).add(ani_id)
 
     except Exception:
         await rep.report(format_exc(), "error")
 
+
 # ----------------------
-# /start handler logic for first-hit / second-hit
+# /start handler for first-hit / second-hit
 # ----------------------
 async def handle_start(client, message, start_payload):
     try:
@@ -179,7 +178,7 @@ async def handle_start(client, message, start_payload):
 
     user_id = message.from_user.id
 
-    # Check in DB if user already received this anime
+    # Check if user already received this anime
     already_received = await db.get_user_anime(user_id, ani_id)
 
     if already_received and already_received.get("got_file", False):
@@ -193,7 +192,7 @@ async def handle_start(client, message, start_payload):
         await message.reply("File not found!")
         return
 
-    # Send depending on file type
+    # Send file depending on type
     if msg.document:
         sent = await message.reply_document(msg.document.file_id)
     elif msg.video:
@@ -204,6 +203,9 @@ async def handle_start(client, message, start_payload):
         await message.reply("File type not supported!")
         return
 
+    # Mark user as received immediately
+    await db.mark_user_anime(user_id, ani_id)
+
     # Auto-delete after 1 minute
     try:
         await sleep(60)
@@ -211,8 +213,6 @@ async def handle_start(client, message, start_payload):
     except:
         pass
 
-    # Mark that user received this anime
-    await db.mark_user_anime(user_id, ani_id)
 
 # ----------------------
 # Extra utils
