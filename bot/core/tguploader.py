@@ -1,19 +1,15 @@
-# bot/core/tg_upload.py
-
 from time import time, sleep
 from traceback import format_exc
 from math import floor
 from os import path as ospath
 from pyrogram.errors import FloodWait
-
 from bot import bot, Var
 from .func_utils import editMessage, convertBytes, convertTime
 from .reporter import rep
-from .database import db
-
+from .gdrive_uploader import upload_to_drive
 
 class TgUploader:
-    def __init__(self, message, ani_id=None, ep=None):
+    def __init__(self, message):
         self.cancelled = False
         self.message = message
         self.__name = ""
@@ -21,14 +17,8 @@ class TgUploader:
         self.__client = bot
         self.__start = time()
         self.__updater = time()
-        self.__ani_id = ani_id
-        self.__ep = ep
 
     async def upload(self, path, qual, **kwargs):
-        """
-        Upload file to Telegram FILE_STORE.
-        After upload, save msg_id in DB for reuse.
-        """
         self.__name = ospath.basename(path)
         self.__qual = qual
         try:
@@ -54,10 +44,13 @@ class TgUploader:
 
             await rep.report("[INFO] ✅ Successfully Uploaded File to Telegram", "info")
 
-            # ✅ Save msg_id into DB
-            if self.__ani_id and self.__ep is not None:
-                await db.saveAnime(self.__ani_id, self.__ep, self.__qual, msg_id=msg.id)
-                print(f"[UPLOAD] ani_id={self.__ani_id}, ep={self.__ep}, qual={self.__qual}, msg_id={msg.id}")
+            # Upload to Drive
+            drive_link = await upload_to_drive(path)
+            if drive_link:
+                await self.__client.send_message(
+                    chat_id=Var.LOG_CHANNEL,
+                    text=f"✅ <b>{self.__name}</b> also uploaded to <b>Google Drive</b>\n\n🔗 {drive_link}"
+                )
 
             return msg
 
