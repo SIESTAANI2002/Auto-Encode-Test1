@@ -9,7 +9,7 @@ from sys import executable
 from signal import SIGKILL
 
 from bot import bot, Var, bot_loop, sch, LOGS, ffQueue, ffLock, ffpids_cache, ff_queued
-from bot.core.auto_animes import fetch_animes
+from bot.core.auto_animes import fetch_animes, handle_file_check
 from bot.core.func_utils import clean_up, new_task
 from bot.modules.up_posts import upcoming_animes
 from bot.core.database import db  # ensure db import here (no circular import with auto_animes)
