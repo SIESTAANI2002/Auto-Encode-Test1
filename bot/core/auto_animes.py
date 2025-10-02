@@ -4,8 +4,9 @@ from asyncio import Event
 from os import path as ospath
 from aiofiles.os import remove as aioremove
 from traceback import format_exc
-from pyrogram import filters
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from pyrogram.errors import RPCError
+
 from bot import bot, bot_loop, Var, ani_cache, ffQueue, ffLock, ff_queued
 from bot.core.database import db
 from .tordownload import TorDownloader
@@ -15,7 +16,13 @@ from .ffencoder import FFEncoder
 from .tguploader import TgUploader
 from .reporter import rep
 
-btn_formatter = {'1080': '1080p', '720': '720p', '480': '480p'}
+btn_formatter = {
+    '1080': '1080p',
+    '720': '720p',
+    '480': '480p'
+}
+
+# Protect content from env
 PROTECT_CONTENT = True if getattr(Var, "TG_PROTECT_CONTENT", "1") == "1" else False
 
 # ----------------- Fetch Animes -----------------
@@ -40,6 +47,7 @@ async def get_animes(name, torrent, force=False):
             ani_cache.setdefault('ongoing', set()).add(ani_id)
         elif not force:
             return
+
         if not force and ani_id in ani_cache.get('completed', set()):
             return
 
@@ -47,9 +55,11 @@ async def get_animes(name, torrent, force=False):
         qual_data = ani_data.get('episodes', {}).get(str(ep_no)) if ani_data else None
         if not force and qual_data and all(qual_data.get(q, {}).get('uploaded') for q in Var.QUALS):
             return
+
         if "[Batch]" in name:
             await rep.report(f"Torrent Skipped!\n\n{name}", "warning")
             return
+
         await rep.report(f"New Anime Torrent Found!\n\n{name}", "info")
 
         post_msg = await bot.send_photo(
@@ -64,15 +74,17 @@ async def get_animes(name, torrent, force=False):
             f"‣ <b>Anime Name :</b> <b><i>{name}</i></b>\n\n<i>Downloading...</i>"
         )
 
-        # Download with retries
+        # Download with a few retries
         dl = None
         for attempt in range(3):
             dl = await TorDownloader("./downloads").download(torrent, name)
-            if dl and ospath.exists(dl): break
-            await rep.report(f"Download failed. Retry {attempt+1}/3", "warning")
+            if dl and ospath.exists(dl):
+                break
+            await rep.report(f"Download failed or incomplete. Retrying ({attempt+1}/3)...", "warning")
             await asyncio.sleep(5)
+
         if not dl or not ospath.exists(dl):
-            await rep.report(f"File Download Incomplete", "error")
+            await rep.report(f"File Download Incomplete after retries, Skipping", "error")
             try: await stat_msg.delete()
             except: pass
             return
@@ -85,6 +97,7 @@ async def get_animes(name, torrent, force=False):
             await rep.report("Added Task to Queue...", "info")
         await ffQueue.put(post_id)
         await ffEvent.wait()
+
         await ffLock.acquire()
         btns = []
 
@@ -97,7 +110,7 @@ async def get_animes(name, torrent, force=False):
             try:
                 out_path = await FFEncoder(stat_msg, dl, filename, qual).start_encode()
             except Exception as e:
-                await rep.report(f"Error: {e}", "error")
+                await rep.report(f"Error: {e}, Cancelled, Retry Again!", "error")
                 try: await stat_msg.delete()
                 except: pass
                 ffLock.release()
@@ -117,82 +130,90 @@ async def get_animes(name, torrent, force=False):
                 return
 
             msg_id = uploaded_msg.id
-
-            # ---------------- Buttons with Deep-Link ----------------
+            # Deep-link for first-time users
             deep_link = f"https://t.me/{Var.BOT_USERNAME}?start=autofile-{ani_id}-{ep_no}-{qual}-{msg_id}"
-            new_btn = InlineKeyboardButton(
-                f"{btn_formatter.get(qual, qual)} - {convertBytes(uploaded_msg.document.file_size)}",
-                url=deep_link
-            )
-            btns.append([new_btn])
-            try:
-                await editMessage(post_msg, post_msg.caption.html if post_msg.caption else "", InlineKeyboardMarkup(btns))
-            except: pass
 
+            # Buttons
+            if post_msg:
+                btn_label = btn_formatter.get(qual, qual)
+                new_btn = InlineKeyboardButton(
+                    f"{btn_label} - {convertBytes(uploaded_msg.document.file_size)}",
+                    url=deep_link
+                )
+                btns.append([new_btn])
+                try:
+                    await editMessage(post_msg, post_msg.caption.html if post_msg.caption else "", InlineKeyboardMarkup(btns))
+                except Exception as e:
+                    await rep.report(f"Failed to edit post buttons: {e}", "error")
+
+            # Save DB
             await db.saveAnime(ani_id, ep_no, qual, msg_id=msg_id, post_id=post_id)
+
             bot_loop.create_task(extra_utils(msg_id, out_path))
 
         ffLock.release()
         try: await stat_msg.delete()
         except: pass
+
+        # Delete original torrent **after all encodes**
         try: await aioremove(dl)
         except: pass
+
         ani_cache.setdefault('completed', set()).add(ani_id)
 
     except Exception:
         await rep.report(format_exc(), "error")
 
 
-# ----------------- Handle Deep-Link /start -----------------
-@bot.on_message(filters.command("start") & filters.private)
-async def start_handler(client, message):
-    text = message.text
-    if not text.startswith("/start autofile-"):
-        await message.reply_text("Welcome! Click a file button to get started.")
-        return
-
+# ----------------- Handle Bot Start -----------------
+async def handle_autofile_start(client, message):
+    """
+    Handles /start autofile-<ani_id>-<ep_no>-<qual>-<msg_id>
+    First click → file
+    Second click → website
+    """
     try:
-        _, ani_id, ep, qual, msg_id = text.split("-")
-        ani_id, ep, msg_id = int(ani_id), int(ep), int(msg_id)
-    except:
-        await message.reply_text("Invalid link or code.")
-        return
+        args = message.text.split("-")
+        if len(args) != 5:
+            await message.reply_text("Invalid link or code.")
+            return
+        _, ani_id, ep_no, qual, msg_id = args
 
-    user_id = message.from_user.id
-    already = await db.hasUserReceived(ani_id, ep, qual, user_id)
+        user_id = message.from_user.id
 
-    if not already:
-        # First click → send file
-        try:
-            file_msg = await bot.get_messages(Var.FILE_STORE, message_ids=msg_id)
+        already = await db.hasUserReceived(ani_id, ep_no, qual, user_id)
+        if not already:
+            # Get original file
+            file_msg = await bot.get_messages(Var.FILE_STORE, message_ids=int(msg_id))
             sent_msg = None
             if file_msg.document:
                 sent_msg = await bot.send_document(
                     chat_id=user_id,
                     document=file_msg.document.file_id,
-                    caption=f"✅ File delivered. Auto-deletes in {int(getattr(Var, 'DEL_TIMER', 300))//60} min.",
+                    caption=f"✅ File delivered. Auto-deletes in {int(getattr(Var,'DEL_TIMER',300))//60} min.",
                     protect_content=PROTECT_CONTENT
                 )
             elif file_msg.video:
                 sent_msg = await bot.send_video(
                     chat_id=user_id,
                     video=file_msg.video.file_id,
-                    caption=f"✅ File delivered. Auto-deletes in {int(getattr(Var, 'DEL_TIMER', 300))//60} min.",
+                    caption=f"✅ File delivered. Auto-deletes in {int(getattr(Var,'DEL_TIMER',300))//60} min.",
                     protect_content=PROTECT_CONTENT
                 )
+
             if sent_msg:
-                await db.markUserReceived(ani_id, ep, qual, user_id)
-                delay = int(getattr(Var, "DEL_TIMER", 300))
-                bot_loop.create_task(auto_delete_message(user_id, sent_msg.id, delay))
-        except Exception as e:
-            await message.reply_text(f"Error sending file: {e}")
-    else:
-        # Second click → send website link
-        website = getattr(Var, "WEBSITE", None) or getattr(Var, "WEBSITE_URL", None)
-        if website:
-            await message.reply_text(f"🔗 Visit website for re-download:\n{website}")
+                await db.markUserReceived(ani_id, ep_no, qual, user_id)
+                bot_loop.create_task(auto_delete_message(user_id, sent_msg.id, int(getattr(Var,'DEL_TIMER',300))))
         else:
-            await message.reply_text("🔗 Website not configured.")
+            # Second click → website
+            website = getattr(Var, "WEBSITE", None) or getattr(Var, "WEBSITE_URL", None)
+            if website:
+                await message.reply_text(f"🔗 Visit website for re-download:\n{website}")
+            else:
+                await message.reply_text("🔗 Website not configured.")
+
+    except Exception as e:
+        await message.reply_text(f"Error: {e}")
 
 
 # ----------------- Auto Delete -----------------
@@ -200,7 +221,8 @@ async def auto_delete_message(chat_id, msg_id, delay):
     await asyncio.sleep(delay)
     try:
         await bot.delete_messages(chat_id, msg_id)
-    except: pass
+    except:
+        pass
 
 
 # ----------------- Extra Utils -----------------
