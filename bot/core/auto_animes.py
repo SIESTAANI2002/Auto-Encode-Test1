@@ -22,6 +22,9 @@ btn_formatter = {
     '480': '480p'
 }
 
+# Read TG_PROTECT_CONTENT from env, default True
+PROTECT_CONTENT = True if getattr(Var, "TG_PROTECT_CONTENT", "1") == "1" else False
+
 # ----------------- Fetch Animes -----------------
 async def fetch_animes():
     await rep.report("Fetch Animes Started !!", "info")
@@ -163,13 +166,12 @@ async def get_animes(name, torrent, force=False):
 
 # ----------------- Handle File Click -----------------
 async def handle_file_click(callback_query, ani_id, ep, qual, msg_id):
-    """Send file in PM with protect_content, auto-delete, first click → file, second → website."""
+    """Send file in PM with protect_content from env, auto-delete, first click → file, second → website."""
     try:
         user_id = callback_query.from_user.id
     except:
         return await callback_query.answer("Unable to determine user.", show_alert=True)
 
-    # quickly respond to Telegram
     await callback_query.answer()
 
     already = await db.hasUserReceived(ani_id, ep, qual, user_id)
@@ -183,14 +185,14 @@ async def handle_file_click(callback_query, ani_id, ep, qual, msg_id):
                     chat_id=user_id,
                     document=file_msg.document.file_id,
                     caption=f"✅ File delivered. Auto-deletes in {Var.DEL_TIMER//60} min.",
-                    protect_content=True
+                    protect_content=PROTECT_CONTENT
                 )
             elif file_msg.video:
                 sent_msg = await bot.send_video(
                     chat_id=user_id,
                     video=file_msg.video.file_id,
                     caption=f"✅ File delivered. Auto-deletes in {Var.DEL_TIMER//60} min.",
-                    protect_content=True
+                    protect_content=PROTECT_CONTENT
                 )
 
             if sent_msg:
@@ -206,7 +208,6 @@ async def handle_file_click(callback_query, ani_id, ep, qual, msg_id):
                 await callback_query.message.reply_text(f"Error sending file: {e}")
 
     else:
-        # website link for repeated clicks
         website = getattr(Var, "WEBSITE", None) or getattr(Var, "WEBSITE_URL", None)
         if website:
             try:
