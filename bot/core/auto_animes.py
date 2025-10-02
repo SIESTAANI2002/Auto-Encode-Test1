@@ -120,24 +120,25 @@ async def get_animes(name, torrent, force=False):
 
             await rep.report(f"✅ Successfully Uploaded {qual} File to Tg...", "info")
             msg_id = msg.id
-            link = f"https://telegram.me/{(await bot.get_me()).username}?start={await encode('get-'+str(msg_id * abs(Var.FILE_STORE)))}"
+
+            # Button link to bot start
+            link = f"https://telegram.me/{(await bot.get_me()).username}?start={await encode(f'anime-{ani_id}-{msg_id}')}"
 
             # Telegram buttons
-            if post_msg:
-                btn_label = btn_formatter.get(qual, qual)
-                new_btn = InlineKeyboardButton(
-                    f"{btn_label} - {convertBytes(msg.document.file_size)}",
-                    url=link
-                )
-                if len(btns) != 0 and len(btns[-1]) == 1:
-                    btns[-1].append(new_btn)
-                else:
-                    btns.append([new_btn])
-                await editMessage(
-                    post_msg,
-                    post_msg.caption.html if post_msg.caption else "",
-                    InlineKeyboardMarkup(btns)
-                )
+            btn_label = btn_formatter.get(qual, qual)
+            new_btn = InlineKeyboardButton(
+                f"{btn_label} - {convertBytes(msg.document.file_size)}",
+                url=link
+            )
+            if len(btns) != 0 and len(btns[-1]) == 1:
+                btns[-1].append(new_btn)
+            else:
+                btns.append([new_btn])
+            await editMessage(
+                post_msg,
+                post_msg.caption.html if post_msg.caption else "",
+                InlineKeyboardMarkup(btns)
+            )
 
             # Save in DB
             await db.saveAnime(ani_id, ep_no, qual, post_id)
@@ -150,11 +151,59 @@ async def get_animes(name, torrent, force=False):
 
         # Cleanup original file after all qualities
         await aioremove(dl)
-
         ani_cache.setdefault('completed', set()).add(ani_id)
 
     except Exception:
         await rep.report(format_exc(), "error")
+
+# ----------------------
+# /start handler logic for first-hit / second-hit
+# ----------------------
+async def handle_start(client, message, start_payload):
+    """
+    start_payload example: "anime-<ani_id>-<msg_id>"
+    """
+    try:
+        if not start_payload.startswith("anime-"):
+            return
+
+        parts = start_payload.split("-")
+        ani_id = parts[1]
+        msg_id = int(parts[2])
+        user_id = message.from_user.id
+
+        # Check MongoDB if user already got this anime
+        user_anime = await db.get_user_anime(user_id, ani_id)
+
+        if not user_anime:
+            # First hit → send file
+            msg = await bot.get_messages(Var.MAIN_CHANNEL, message_ids=msg_id)
+            if msg and msg.document:
+                sent = await message.reply_document(msg.document.file_id)
+                await message.reply_text("File will be Auto Deleted in 1m, forward to Saved Messages.")
+
+                # Mark user+anime in DB
+                await db.mark_user_anime(user_id, ani_id)
+
+                # Auto delete after 60 seconds
+                await asyncio.sleep(60)
+                try:
+                    await client.delete_messages(message.chat.id, sent.id)
+                except:
+                    pass
+        else:
+            # Already got file → send website link
+            button = InlineKeyboardMarkup(
+                [[InlineKeyboardButton("Visit Website 🌐", url="https://yourwebsite.com")]]
+            )
+            await message.reply_text(
+                "You already received this anime. Check out our website:",
+                reply_markup=button
+            )
+
+    except Exception:
+        await rep.report(format_exc(), "error")
+
 
 async def extra_utils(msg_id, out_path):
     try:
