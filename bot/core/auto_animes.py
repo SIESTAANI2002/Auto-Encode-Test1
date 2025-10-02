@@ -5,6 +5,7 @@ from os import path as ospath
 from aiofiles.os import remove as aioremove
 from traceback import format_exc
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from pyrogram import filters
 from pyrogram.errors import RPCError
 
 from bot import bot, bot_loop, Var, ani_cache, ffQueue, ffLock, ff_queued
@@ -34,7 +35,6 @@ async def fetch_animes():
             for link in Var.RSS_ITEMS:
                 if (info := await getfeed(link, 0)):
                     bot_loop.create_task(get_animes(info.title, info.link))
-
 
 # ----------------- Get & Encode Anime -----------------
 async def get_animes(name, torrent, force=False):
@@ -164,54 +164,44 @@ async def get_animes(name, torrent, force=False):
         await rep.report(format_exc(), "error")
 
 
-# ----------------- Handle File Click (Legacy) -----------------
+# ----------------- Handle File Click -----------------
 async def handle_file_click(callback_query, ani_id, ep, qual, msg_id):
-    """Legacy handler for old buttons. Sends users to PM via bot link if they haven't started bot yet."""
+    """Send file in PM with protect_content from env, auto-delete."""
     try:
         user_id = callback_query.from_user.id
     except:
         return await callback_query.answer("Unable to determine user.", show_alert=True)
 
+    await callback_query.answer()
+
     already = await db.hasUserReceived(ani_id, ep, qual, user_id)
 
     if not already:
-        # Generate /start link payload
-        payload = f"file_{ani_id}_{ep}_{qual}_{msg_id}"
-        bot_username = getattr(Var, "BOT_USERNAME", None)
-        if bot_username:
-            url = f"https://t.me/{bot_username}?start={payload}"
-            await callback_query.answer(
-                "Click here to get the file in PM!", 
-                url=url,
-                show_alert=True
+        # Generate deep-link start payload
+        bot_username = (await bot.get_me()).username
+        start_payload = f"autofile-{ani_id}-{ep}-{qual}-{msg_id}"
+        deep_link = f"https://t.me/{bot_username}?start={start_payload}"
+
+        try:
+            await callback_query.message.reply_text(
+                f"⚠️ Please click this link to start the bot and get your file:\n{deep_link}"
             )
-        else:
-            await callback_query.answer(
-                "Bot PM not configured. Please start the bot manually.", 
-                show_alert=True
-            )
+        except:
+            pass
     else:
-        # Already received, send website link
+        # Website fallback
         website = getattr(Var, "WEBSITE", None) or getattr(Var, "WEBSITE_URL", None)
         if website:
-            try:
-                await callback_query.message.reply_text(f"🔗 Visit website for re-download:\n{website}")
-            except:
-                pass
+            await callback_query.message.reply_text(f"🔗 Visit website for re-download:\n{website}")
         else:
             await callback_query.message.reply_text("🔗 Website not configured.")
 
 
-# ----------------- Handle PM /start -----------------
-async def handle_pm_start(user_id, payload):
-    """Called when user starts bot with payload. Sends requested file in PM."""
+# ----------------- Send file helper -----------------
+async def send_file_to_user(user_id, ani_id, ep_no, qual, msg_id):
     try:
-        if not payload.startswith("file_"):
-            return
-        _, ani_id, ep, qual, msg_id = payload.split("_")
         file_msg = await bot.get_messages(Var.FILE_STORE, message_ids=int(msg_id))
         sent_msg = None
-
         if file_msg.document:
             sent_msg = await bot.send_document(
                 chat_id=user_id,
@@ -228,17 +218,15 @@ async def handle_pm_start(user_id, payload):
             )
 
         if sent_msg:
-            await db.markUserReceived(ani_id, ep, qual, user_id)
+            await db.markUserReceived(ani_id, ep_no, qual, user_id)
             delay = int(getattr(Var, "DEL_TIMER", 300))
             bot_loop.create_task(auto_delete_message(user_id, sent_msg.id, delay))
-
     except Exception as e:
-        print(f"Error sending PM file: {e}")
+        await bot.send_message(user_id, f"❌ Error sending file: {e}")
 
 
 # ----------------- Auto Delete -----------------
 async def auto_delete_message(chat_id, msg_id, delay):
-    """Delete a message after delay seconds."""
     await asyncio.sleep(delay)
     try:
         await bot.delete_messages(chat_id, msg_id)
@@ -258,3 +246,19 @@ async def extra_utils(msg_id, out_path):
                     pass
     except Exception:
         await rep.report(format_exc(), "error")
+
+
+# ----------------- Start Handler -----------------
+@bot.on_message(filters.private & filters.command("start"))
+async def start_handler(client, message):
+    user_id = message.from_user.id
+    if len(message.command) > 1:
+        payload = message.command[1]
+        if payload.startswith("autofile-"):
+            try:
+                _, ani_id, ep_no, qual, msg_id = payload.split("-")
+                await send_file_to_user(user_id, ani_id, ep_no, qual, msg_id)
+                return
+            except Exception as e:
+                await message.reply_text(f"❌ Failed to decode link: {e}")
+    await message.reply_text("👋 Welcome! Use the channel buttons to get anime files.")
