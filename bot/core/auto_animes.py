@@ -1,4 +1,3 @@
-# bot/core/auto_animes.py
 import asyncio
 from asyncio import Event
 from os import path as ospath
@@ -17,12 +16,7 @@ from .ffencoder import FFEncoder
 from .tguploader import TgUploader
 from .reporter import rep
 
-btn_formatter = {
-    '1080': '1080p',
-    '720': '720p',
-    '480': '480p'
-}
-
+btn_formatter = {'1080': '1080p', '720': '720p', '480': '480p'}
 PROTECT_CONTENT = True if getattr(Var, "TG_PROTECT_CONTENT", "1") == "1" else False
 
 # ----------------- Fetch Animes -----------------
@@ -34,7 +28,6 @@ async def fetch_animes():
             for link in Var.RSS_ITEMS:
                 if (info := await getfeed(link, 0)):
                     bot_loop.create_task(get_animes(info.title, info.link))
-
 
 # ----------------- Get & Encode Anime -----------------
 async def get_animes(name, torrent, force=False):
@@ -74,7 +67,6 @@ async def get_animes(name, torrent, force=False):
             f"‣ <b>Anime Name :</b> <b><i>{name}</i></b>\n\n<i>Downloading...</i>"
         )
 
-        # Download with retries
         dl = None
         for attempt in range(3):
             dl = await TorDownloader("./downloads").download(torrent, name)
@@ -130,6 +122,9 @@ async def get_animes(name, torrent, force=False):
                 return
 
             msg_id = uploaded_msg.id
+            # Save msg_id to DB
+            await db.saveAnime(ani_id, ep_no, qual, msg_id=msg_id, post_id=post_id)
+
             callback_data = f"sendfile|{ani_id}|{ep_no}|{qual}|{msg_id}"
             btn_label = btn_formatter.get(qual, qual)
             btns.append([InlineKeyboardButton(
@@ -141,9 +136,6 @@ async def get_animes(name, torrent, force=False):
                 await editMessage(post_msg, post_msg.caption.html if post_msg.caption else "", InlineKeyboardMarkup(btns))
             except Exception as e:
                 await rep.report(f"Failed to edit post buttons: {e}", "error")
-
-            # Save DB after successful upload
-            await db.saveAnime(ani_id, ep_no, qual, msg_id=msg_id, post_id=post_id)
 
             bot_loop.create_task(extra_utils(msg_id, out_path))
 
@@ -159,8 +151,7 @@ async def get_animes(name, torrent, force=False):
     except Exception:
         await rep.report(format_exc(), "error")
 
-
-# ----------------- Handle /start in PM -----------------
+# ----------------- /start PM -----------------
 @bot.on_message(filters.private & filters.command("start"))
 async def start_pm_handler(client, message):
     try:
@@ -180,29 +171,26 @@ async def start_pm_handler(client, message):
         await message.reply("Invalid payload.")
         return
 
-    already = await db.hasUserReceived(ani_id, ep_no, qual, user_id)
     file_info = await db.getEpisodeFileInfo(ani_id, ep_no, qual)
-
-    if not already and file_info.get('uploaded') and file_info.get('msg_id'):
-        await send_file_pm(user_id, ani_id, ep_no, qual)
-    elif not file_info.get('uploaded') or not file_info.get('msg_id'):
-        await message.reply("⏳ File is being prepared. Please try again in a few minutes.")
-    else:
-        website = getattr(Var, "WEBSITE", None) or getattr(Var, "WEBSITE_URL", None)
-        if website:
-            await message.reply(f"🔗 Visit website for re-download:\n{website}")
+    if file_info.get('uploaded') and file_info.get('msg_id'):
+        already = await db.hasUserReceived(ani_id, ep_no, qual, user_id)
+        if not already:
+            await send_file_pm(user_id, ani_id, ep_no, qual)
         else:
-            await message.reply("🔗 Website not configured.")
-
+            website = getattr(Var, "WEBSITE", None) or getattr(Var, "WEBSITE_URL", None)
+            await message.reply(f"🔗 Visit website for re-download:\n{website}")
+    else:
+        await message.reply("⏳ File is being prepared. Please try again in a few minutes.")
 
 # ----------------- Send File PM -----------------
 async def send_file_pm(user_id, ani_id, ep_no, qual):
     try:
         file_info = await db.getEpisodeFileInfo(ani_id, ep_no, qual)
-        if not file_info.get('msg_id'):
+        msg_id = file_info.get('msg_id')
+        if not msg_id:
             return
 
-        file_msg = await bot.get_messages(Var.FILE_STORE, message_ids=file_info['msg_id'])
+        file_msg = await bot.get_messages(Var.FILE_STORE, message_ids=msg_id)
         sent_msg = None
 
         if file_msg.document:
@@ -225,15 +213,11 @@ async def send_file_pm(user_id, ani_id, ep_no, qual):
             delay = int(getattr(Var, "DEL_TIMER", 300))
             bot_loop.create_task(auto_delete_message(user_id, sent_msg.id, delay))
 
-    except RPCError as e:
-        err = str(e)
-        if "bot can't initiate conversation" in err or "user is deactivated" in err or "forbidden" in err.lower():
-            return
-        else:
-            await bot.send_message(user_id, f"Error sending file: {e}")
+    except RPCError:
+        pass
+    except Exception as e:
+        await bot.send_message(user_id, f"Error sending file: {e}")
 
-
-# ----------------- Auto Delete -----------------
 async def auto_delete_message(chat_id, msg_id, delay):
     await asyncio.sleep(delay)
     try:
@@ -241,8 +225,6 @@ async def auto_delete_message(chat_id, msg_id, delay):
     except:
         pass
 
-
-# ----------------- Extra Utils -----------------
 async def extra_utils(msg_id, out_path):
     try:
         msg = await bot.get_messages(Var.FILE_STORE, message_ids=msg_id)
@@ -250,7 +232,7 @@ async def extra_utils(msg_id, out_path):
             for chat_id in Var.BACKUP_CHANNEL.split():
                 try:
                     await msg.copy(int(chat_id))
-                except Exception:
+                except:
                     pass
     except Exception:
         await rep.report(format_exc(), "error")
