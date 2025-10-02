@@ -7,7 +7,7 @@ from pyrogram.errors import FloodWait
 from bot import bot, Var
 from .func_utils import editMessage, convertBytes, convertTime
 from .reporter import rep
-from .gdrive_uploader import upload_to_drive  # ✅ Import Drive uploader
+from .gdrive_uploader import upload_to_drive  # ✅ Drive uploader
 
 
 class TgUploader:
@@ -20,11 +20,7 @@ class TgUploader:
         self.__start = time()
         self.__updater = time()
 
-    async def upload(self, path, qual, **kwargs):
-        """
-        Uploads file to Telegram FILE_STORE.
-        Supports extra kwargs like protect_content=True
-        """
+    async def upload(self, path, qual, protect_content=False):
         self.__name = ospath.basename(path)
         self.__qual = qual
         try:
@@ -35,8 +31,8 @@ class TgUploader:
                     thumb="thumb.jpg" if ospath.exists("thumb.jpg") else None,
                     caption=f"<i>{self.__name}</i>",
                     force_document=True,
-                    progress=self.progress_status,
-                    **kwargs
+                    protect_content=protect_content,
+                    progress=self.progress_status
                 )
             else:
                 msg = await self.__client.send_video(
@@ -44,11 +40,11 @@ class TgUploader:
                     video=path,
                     thumb="thumb.jpg" if ospath.exists("thumb.jpg") else None,
                     caption=f"<i>{self.__name}</i>",
-                    progress=self.progress_status,
-                    **kwargs
+                    protect_content=protect_content,
+                    progress=self.progress_status
                 )
 
-            await rep.report("[INFO] ✅ Successfully Uploaded File to Telegram", "info")
+            await rep.report("[INFO] Succesfully Uploaded File into Tg...", "info")
 
             # ✅ After Telegram upload → Upload to Drive
             drive_link = await upload_to_drive(path)
@@ -63,7 +59,7 @@ class TgUploader:
 
         except FloodWait as e:
             sleep(e.value * 1.5)
-            return await self.upload(path, qual, **kwargs)
+            return await self.upload(path, qual, protect_content=protect_content)
         except Exception as e:
             await rep.report(format_exc(), "error")
             raise e
