@@ -7,13 +7,31 @@ from sys import executable
 from signal import SIGKILL
 
 from bot import bot, Var, bot_loop, sch, LOGS, ffQueue, ffLock, ffpids_cache, ff_queued
-from bot.core.auto_animes import fetch_animes
-from bot.core.func_utils import clean_up, new_task, editMessage
+from bot.core.auto_animes import fetch_animes, handle_start  # added handle_start
+from bot.core.func_utils import clean_up, new_task, editMessage, decode  # added decode
 from bot.modules.up_posts import upcoming_animes
 
+# ----------------------
+# /start command handler
+# ----------------------
+@bot.on_message(command("start"))
+async def start(client, message):
+    if len(message.command) > 1:
+        start_payload = message.text.split(" ", 1)[1]  # get the payload after /start
+        try:
+            start_payload = await decode(start_payload)  # decode the encoded payload
+            await handle_start(client, message, start_payload)
+        except Exception:
+            await message.reply("Input Link is Invalid for Usage !")
+    else:
+        await message.reply("Hello! Use the button to get your file.")
+
+# ----------------------
+# Restart command
+# ----------------------
 @bot.on_message(command('restart') & user(Var.ADMINS))
 @new_task
-async def restart(client, message):
+async def restart_cmd(client, message):
     rmessage = await message.reply('<i>Restarting...</i>')
     if sch.running:
         sch.shutdown(wait=False)
@@ -31,6 +49,9 @@ async def restart(client, message):
         await f.write(f"{rmessage.chat.id}\n{rmessage.id}\n")
     execl(executable, executable, "-m", "bot")
 
+# ----------------------
+# Post-restart handler
+# ----------------------
 async def restart():
     if ospath.isfile(".restartmsg"):
         with open(".restartmsg") as f:
@@ -39,7 +60,10 @@ async def restart():
             await bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text="<i>Restarted !</i>")
         except Exception as e:
             LOGS.error(e)
-            
+
+# ----------------------
+# FF queue loop
+# ----------------------
 async def queue_loop():
     LOGS.info("Queue Loop Started !!")
     while True:
@@ -52,6 +76,9 @@ async def queue_loop():
                 ffQueue.task_done()
         await asleep(10)
 
+# ----------------------
+# Main function
+# ----------------------
 async def main():
     sch.add_job(upcoming_animes, "cron", hour=0, minute=30)
     await bot.start()
@@ -67,6 +94,9 @@ async def main():
         task.cancel()
     await clean_up()
     LOGS.info('Finished AutoCleanUp !!')
-    
+
+# ----------------------
+# Entry point
+# ----------------------
 if __name__ == '__main__':
     bot_loop.run_until_complete(main())
