@@ -1,6 +1,6 @@
 # bot/core/auto_animes.py
 import asyncio
-from asyncio import Event
+from asyncio import Event, sleep
 from os import path as ospath
 from aiofiles.os import remove as aioremove
 from traceback import format_exc
@@ -10,7 +10,7 @@ import base64
 from bot import bot, bot_loop, Var, ani_cache, ffQueue, ffLock, ff_queued
 from .tordownload import TorDownloader
 from bot.core.database import db
-from .func_utils import getfeed, encode, editMessage, sendMessage, convertBytes
+from .func_utils import getfeed, editMessage, sendMessage, convertBytes
 from .text_utils import TextEditor
 from .ffencoder import FFEncoder
 from .tguploader import TgUploader
@@ -21,6 +21,9 @@ btn_formatter = {
     '480': '48𝟬𝗽'
 }
 
+# ----------------------
+# Fetch ongoing animes
+# ----------------------
 async def fetch_animes():
     await rep.report("Fetch Animes Started !!", "info")
     while True:
@@ -30,6 +33,9 @@ async def fetch_animes():
                 if (info := await getfeed(link, 0)):
                     bot_loop.create_task(get_animes(info.title, info.link))
 
+# ----------------------
+# Main function to download, encode, upload and create buttons
+# ----------------------
 async def get_animes(name, torrent, force=False):
     try:
         aniInfo = TextEditor(name)
@@ -122,14 +128,11 @@ async def get_animes(name, torrent, force=False):
             await rep.report(f"✅ Successfully Uploaded {qual} File to Tg...", "info")
             msg_id = msg.id
 
-            # Button link to bot start
-            link = f"https://telegram.me/{(await bot.get_me()).username}?start={await encode(f'anime-{ani_id}-{msg_id}')}"
-            
-            # Generate Base64 encoded start payload
+            # Create Base64 button payload
             payload = f"anime-{ani_id}-{msg_id}"
             encoded_payload = base64.urlsafe_b64encode(payload.encode()).decode()
             link = f"https://t.me/{(await bot.get_me()).username}?start={encoded_payload}"
-            
+
             # Telegram buttons
             btn_label = btn_formatter.get(qual, qual)
             new_btn = InlineKeyboardButton(
@@ -147,7 +150,7 @@ async def get_animes(name, torrent, force=False):
             )
 
             # Save in DB
-            await db.saveAnime(ani_id, ep_no, qual, post_id)
+            await db.saveAnime(ani_id, ep_no, qual, msg_id)
 
             # Extra utils (backup etc.)
             bot_loop.create_task(extra_utils(msg_id, out_path))
@@ -166,7 +169,6 @@ async def get_animes(name, torrent, force=False):
 # /start handler logic for first-hit / second-hit
 # ----------------------
 async def handle_start(client, message, start_payload):
-    # Example payload: "anime-183965-5286"
     try:
         parts = start_payload.split("-")
         ani_id = parts[1]
@@ -177,7 +179,7 @@ async def handle_start(client, message, start_payload):
 
     user_id = message.from_user.id
 
-    # Check in DB if user already received this anime
+    # Check if user already received this anime
     user_record = await db.getAnime(ani_id)
     already_received = user_record.get("users", {}).get(str(user_id), False)
 
@@ -203,7 +205,7 @@ async def handle_start(client, message, start_payload):
         await message.reply("File type not supported!")
         return
 
-    # Optional: auto-delete after 1 minute
+    # Auto-delete after 1 minute
     try:
         await sleep(60)
         await sent.delete()
@@ -215,6 +217,9 @@ async def handle_start(client, message, start_payload):
     user_data[str(user_id)] = True
     await db.saveAnime(ani_id, "users", user_data)
 
+# ----------------------
+# Extra utils
+# ----------------------
 async def extra_utils(msg_id, out_path):
     try:
         msg = await bot.get_messages(Var.FILE_STORE, message_ids=msg_id)
