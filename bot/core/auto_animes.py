@@ -1,10 +1,12 @@
 # bot/core/auto_animes.py
 import asyncio
+import os
 from asyncio import Event
 from os import path as ospath
 from aiofiles.os import remove as aioremove
 from traceback import format_exc
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from pyrogram.errors import RPCError
 
 from bot import bot, bot_loop, Var, ani_cache, ffQueue, ffLock, ff_queued
 from bot.core.database import db
@@ -15,7 +17,14 @@ from .ffencoder import FFEncoder
 from .tguploader import TgUploader
 from .reporter import rep
 
-btn_formatter = {'1080': '1080p', '720': '720p', '480': '480p'}
+# Env var for protect_content
+TG_PROTECT_CONTENT = os.getenv("TG_PROTECT_CONTENT", "False").lower() == "true"
+
+btn_formatter = {
+    '1080': '1080p',
+    '720': '720p',
+    '480': '480p'
+}
 
 async def fetch_animes():
     await rep.report("Fetch Animes Started !!", "info")
@@ -64,7 +73,7 @@ async def get_animes(name, torrent, force=False):
             f"‣ <b>Anime Name :</b> <b><i>{name}</i></b>\n\n<i>Downloading...</i>"
         )
 
-        # Download with a few retries
+        # Download with retries
         dl = None
         for attempt in range(3):
             dl = await TorDownloader("./downloads").download(torrent, name)
@@ -91,9 +100,6 @@ async def get_animes(name, torrent, force=False):
         await ffLock.acquire()
         btns = []
 
-        # Check env var for protect_content
-        protect = getattr(Var, "TG_PROTECT_CONTENT", "False") == "True"
-
         for qual in Var.QUALS:
             filename = await aniInfo.get_upname(qual)
             await editMessage(stat_msg, f"‣ <b>Anime Name :</b> <b><i>{name}</i></b>\n\n<i>Ready to Encode...</i>")
@@ -115,7 +121,7 @@ async def get_animes(name, torrent, force=False):
 
             try:
                 uploaded_msg = await TgUploader(stat_msg).upload(
-                    out_path, qual, protect_content=protect
+                    out_path, qual, protect_content=TG_PROTECT_CONTENT
                 )
             except Exception as e:
                 await rep.report(f"Error uploading: {e}", "error")
@@ -127,6 +133,7 @@ async def get_animes(name, torrent, force=False):
             msg_id = uploaded_msg.id
             callback_data = f"sendfile|{ani_id}|{ep_no}|{qual}|{msg_id}"
 
+            # Buttons
             if post_msg:
                 btn_label = btn_formatter.get(qual, qual)
                 new_btn = InlineKeyboardButton(
@@ -139,14 +146,16 @@ async def get_animes(name, torrent, force=False):
                 except Exception as e:
                     await rep.report(f"Failed to edit post buttons: {e}", "error")
 
+            # Save DB
             await db.saveAnime(ani_id, ep_no, qual, msg_id=msg_id, post_id=post_id)
+
             bot_loop.create_task(extra_utils(msg_id, out_path))
 
         ffLock.release()
         try: await stat_msg.delete()
         except: pass
 
-        # Delete original torrent after all encodes
+        # Delete original torrent **after all encodes**
         try: await aioremove(dl)
         except: pass
 
@@ -175,6 +184,7 @@ async def handle_file_click(callback_query, ani_id, ep, qual, msg_id):
             )
             await db.markUserReceived(ani_id, ep, qual, user_id)
 
+            # Send confirmation with auto-delete
             if getattr(Var, "AUTO_DEL", "False") == "True":
                 timer = int(getattr(Var, "DEL_TIMER", 300))
                 info_msg = await bot.send_message(
