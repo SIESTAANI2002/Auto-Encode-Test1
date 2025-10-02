@@ -15,16 +15,22 @@ from bot.modules.up_posts import upcoming_animes
 # ----------------------
 # /start command handler
 # ----------------------
+
 @bot.on_message(filters.command("start"))
 async def start(client, message):
     if len(message.command) > 1:
-        start_payload = message.text.split(" ", 1)[1]  # get payload after /start
+        start_payload = message.text.split(" ", 1)[1]
         try:
-            decoded_payload = await decode(start_payload)
-            await handle_start(client, message, decoded_payload)
-        except Exception as e:
+            # Decode Base64 safely
+            padded = start_payload + '=' * (-len(start_payload) % 4)
+            decoded_payload = base64.urlsafe_b64decode(padded).decode()
+        except Exception:
             await message.reply("Input Link is Invalid for Usage !")
-            print("Decode error:", e)  # debug
+            return
+
+        # Call your handle_start function
+        await handle_start(client, message, decoded_payload)
+
     else:
         await message.reply("Hello! Use the button to get your file.")
 
