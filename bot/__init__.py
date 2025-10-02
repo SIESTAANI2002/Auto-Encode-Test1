@@ -56,6 +56,7 @@ class Var:
     TOKYO_PASS = getenv("TOKYO_PASS", "")
     WEBSITE = getenv("WEBSITE", "")
     TG_PROTECT_CONTENT = getenv("TG_PROTECT_CONTENT", "")
+    BOT_USERNAME = getenv("BOT_USERNAME", "") # exact username without @
     
     SEND_SCHEDULE = getenv("SEND_SCHEDULE", "False").lower() == "true"
     BRAND_UNAME = getenv("BRAND_UNAME", "@username")
