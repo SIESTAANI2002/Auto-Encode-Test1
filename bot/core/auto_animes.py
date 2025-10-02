@@ -18,6 +18,7 @@ from .reporter import rep
 
 btn_formatter = {
     '1080': '1080p',
+    '720': '720p',
     '480': '48𝟬𝗽'
 }
 
