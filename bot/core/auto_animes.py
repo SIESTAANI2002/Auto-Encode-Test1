@@ -23,9 +23,8 @@ btn_formatter = {
     '480': '480p'
 }
 
-# Read TG_PROTECT_CONTENT from env, default True
+# Protect content from env var
 PROTECT_CONTENT = True if getattr(Var, "TG_PROTECT_CONTENT", "1") == "1" else False
-
 
 # ----------------- Fetch Animes -----------------
 async def fetch_animes():
@@ -76,7 +75,7 @@ async def get_animes(name, torrent, force=False):
             f"‣ <b>Anime Name :</b> <b><i>{name}</i></b>\n\n<i>Downloading...</i>"
         )
 
-        # Download with retries
+        # Download with a few retries
         dl = None
         for attempt in range(3):
             dl = await TorDownloader("./downloads").download(torrent, name)
@@ -132,14 +131,14 @@ async def get_animes(name, torrent, force=False):
                 return
 
             msg_id = uploaded_msg.id
+            callback_data = f"sendfile|{ani_id}|{ep_no}|{qual}|{msg_id}"
 
-            # ----------------- URL Button for Auto PM -----------------
+            # Buttons
             if post_msg:
                 btn_label = btn_formatter.get(qual, qual)
-                start_payload = f"sendfile_{ani_id}_{ep_no}_{qual}_{msg_id}"
                 new_btn = InlineKeyboardButton(
                     f"{btn_label} - {convertBytes(uploaded_msg.document.file_size)}",
-                    url=f"https://t.me/{Var.BOT_USERNAME}?start={start_payload}"
+                    callback_data=callback_data
                 )
                 btns.append([new_btn])
                 try:
@@ -156,6 +155,7 @@ async def get_animes(name, torrent, force=False):
         try: await stat_msg.delete()
         except: pass
 
+        # Delete original torrent
         try: await aioremove(dl)
         except: pass
 
@@ -165,42 +165,58 @@ async def get_animes(name, torrent, force=False):
         await rep.report(format_exc(), "error")
 
 
-# ----------------- Start Handler for Auto PM -----------------
-@bot.on_message(filters.private & filters.command("start"))
-async def start_handler(client, message):
-    text = message.text
-    if text.startswith("/start sendfile_"):
-        parts = text.split("_")
-        ani_id, ep, qual, msg_id = parts[1], parts[2], parts[3], parts[4]
-        await handle_file_click_pm(message.chat.id, ani_id, ep, qual, msg_id)
-
-
-async def handle_file_click_pm(user_id, ani_id, ep, qual, msg_id):
-    """Deliver file in PM automatically."""
+# ----------------- Handle File Click in PM -----------------
+async def handle_file_click_pm(callback_query, ani_id, ep, qual, msg_id):
+    """Send file in PM on first click, website link on second click, with protect content and auto-delete."""
     try:
-        file_msg = await bot.get_messages(Var.FILE_STORE, message_ids=int(msg_id))
-        sent_msg = None
-        if file_msg.document:
-            sent_msg = await bot.send_document(
-                chat_id=user_id,
-                document=file_msg.document.file_id,
-                caption=f"✅ File delivered. Auto-deletes in {int(getattr(Var,'DEL_TIMER',300))//60} min.",
-                protect_content=PROTECT_CONTENT
-            )
-        elif file_msg.video:
-            sent_msg = await bot.send_video(
-                chat_id=user_id,
-                video=file_msg.video.file_id,
-                caption=f"✅ File delivered. Auto-deletes in {int(getattr(Var,'DEL_TIMER',300))//60} min.",
-                protect_content=PROTECT_CONTENT
-            )
+        user_id = callback_query.from_user.id
+    except:
+        return await callback_query.answer("Unable to determine user.", show_alert=True)
 
-        if sent_msg and getattr(Var, "AUTO_DEL", "False") == "True":
-            delay = int(getattr(Var, "DEL_TIMER", 300))
-            bot_loop.create_task(auto_delete_message(user_id, sent_msg.id, delay))
-        await db.markUserReceived(ani_id, ep, qual, user_id)
-    except Exception as e:
-        pass  # can log if needed
+    await callback_query.answer()
+
+    already = await db.hasUserReceived(ani_id, ep, qual, user_id)
+
+    if already:
+        # User already received → send website link
+        website = getattr(Var, "WEBSITE", None) or getattr(Var, "WEBSITE_URL", None)
+        if website:
+            await bot.send_message(chat_id=user_id, text=f"🔗 Visit website for re-download:\n{website}")
+        else:
+            await callback_query.message.reply_text("🔗 Website not configured.")
+    else:
+        # First time → send file
+        try:
+            file_msg = await bot.get_messages(Var.FILE_STORE, message_ids=int(msg_id))
+            sent_msg = None
+            if file_msg.document:
+                sent_msg = await bot.send_document(
+                    chat_id=user_id,
+                    document=file_msg.document.file_id,
+                    caption=f"✅ File delivered. Auto-deletes in {int(getattr(Var, 'DEL_TIMER', 300))//60} min.",
+                    protect_content=PROTECT_CONTENT
+                )
+            elif file_msg.video:
+                sent_msg = await bot.send_video(
+                    chat_id=user_id,
+                    video=file_msg.video.file_id,
+                    caption=f"✅ File delivered. Auto-deletes in {int(getattr(Var, 'DEL_TIMER', 300))//60} min.",
+                    protect_content=PROTECT_CONTENT
+                )
+
+            if sent_msg:
+                await db.markUserReceived(ani_id, ep, qual, user_id)
+                # Auto delete
+                if getattr(Var, "AUTO_DEL", "False") == "True":
+                    delay = int(getattr(Var, "DEL_TIMER", 300))
+                    bot_loop.create_task(auto_delete_message(sent_msg.chat.id, sent_msg.id, delay))
+
+        except Exception as e:
+            err = str(e)
+            if "bot can't initiate conversation" in err or "user is deactivated" in err or "forbidden" in err.lower():
+                await callback_query.message.reply_text("⚠️ I couldn't send the file — please start the bot in PM first (/start).")
+            else:
+                await callback_query.message.reply_text(f"Error sending file: {e}")
 
 
 # ----------------- Auto Delete -----------------
@@ -224,3 +240,12 @@ async def extra_utils(msg_id, out_path):
                     pass
     except Exception:
         await rep.report(format_exc(), "error")
+
+
+# ----------------- PM /start handler -----------------
+@bot.on_message(filters.private & filters.command("start"))
+async def pm_start_handler(client, message):
+    await message.reply_text(
+        "👋 Welcome! Use the buttons in channel posts to receive anime files in PM. " +
+        "First click sends the file, second click provides the website link."
+    )
