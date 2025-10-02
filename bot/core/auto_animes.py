@@ -5,6 +5,7 @@ from os import path as ospath
 from aiofiles.os import remove as aioremove
 from traceback import format_exc
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+import base64
 
 from bot import bot, bot_loop, Var, ani_cache, ffQueue, ffLock, ff_queued
 from .tordownload import TorDownloader
@@ -123,7 +124,12 @@ async def get_animes(name, torrent, force=False):
 
             # Button link to bot start
             link = f"https://telegram.me/{(await bot.get_me()).username}?start={await encode(f'anime-{ani_id}-{msg_id}')}"
-
+            
+            # Generate Base64 encoded start payload
+            payload = f"anime-{ani_id}-{msg_id}"
+            encoded_payload = base64.urlsafe_b64encode(payload.encode()).decode()
+            link = f"https://t.me/{(await bot.get_me()).username}?start={encoded_payload}"
+            
             # Telegram buttons
             btn_label = btn_formatter.get(qual, qual)
             new_btn = InlineKeyboardButton(
