@@ -20,7 +20,11 @@ class TgUploader:
         self.__start = time()
         self.__updater = time()
 
-    async def upload(self, path, qual):
+    async def upload(self, path, qual, **kwargs):
+        """
+        Uploads file to Telegram FILE_STORE.
+        Supports extra kwargs like protect_content=True
+        """
         self.__name = ospath.basename(path)
         self.__qual = qual
         try:
@@ -31,7 +35,8 @@ class TgUploader:
                     thumb="thumb.jpg" if ospath.exists("thumb.jpg") else None,
                     caption=f"<i>{self.__name}</i>",
                     force_document=True,
-                    progress=self.progress_status
+                    progress=self.progress_status,
+                    **kwargs
                 )
             else:
                 msg = await self.__client.send_video(
@@ -39,10 +44,11 @@ class TgUploader:
                     video=path,
                     thumb="thumb.jpg" if ospath.exists("thumb.jpg") else None,
                     caption=f"<i>{self.__name}</i>",
-                    progress=self.progress_status
+                    progress=self.progress_status,
+                    **kwargs
                 )
 
-            await rep.report("[INFO] Succesfully Uploaded File into Tg...", "info")
+            await rep.report("[INFO] ✅ Successfully Uploaded File to Telegram", "info")
 
             # ✅ After Telegram upload → Upload to Drive
             drive_link = await upload_to_drive(path)
@@ -57,11 +63,10 @@ class TgUploader:
 
         except FloodWait as e:
             sleep(e.value * 1.5)
-            return await self.upload(path, qual)
+            return await self.upload(path, qual, **kwargs)
         except Exception as e:
             await rep.report(format_exc(), "error")
             raise e
-        # ❌ Removed file deletion here (TokyoTosho still needs it!)
 
     async def progress_status(self, current, total):
         if self.cancelled:
