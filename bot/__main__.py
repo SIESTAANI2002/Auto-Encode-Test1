@@ -5,6 +5,7 @@ from pyrogram.filters import command, user
 from os import path as ospath, execl, kill
 from sys import executable
 from signal import SIGKILL
+from pyrogram import filters
 
 from bot import bot, Var, bot_loop, sch, LOGS, ffQueue, ffLock, ffpids_cache, ff_queued
 from bot.core.auto_animes import fetch_animes, handle_start  # added handle_start
@@ -14,15 +15,16 @@ from bot.modules.up_posts import upcoming_animes
 # ----------------------
 # /start command handler
 # ----------------------
-@bot.on_message(command("start"))
+@bot.on_message(filters.command("start"))
 async def start(client, message):
     if len(message.command) > 1:
-        start_payload = message.text.split(" ", 1)[1]  # get the payload after /start
+        start_payload = message.text.split(" ", 1)[1]  # get payload after /start
         try:
-            start_payload = await decode(start_payload)  # decode the encoded payload
-            await handle_start(client, message, start_payload)
-        except Exception:
+            decoded_payload = await decode(start_payload)
+            await handle_start(client, message, decoded_payload)
+        except Exception as e:
             await message.reply("Input Link is Invalid for Usage !")
+            print("Decode error:", e)  # debug
     else:
         await message.reply("Hello! Use the button to get your file.")
 
