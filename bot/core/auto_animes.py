@@ -177,7 +177,7 @@ async def handle_start(client, message, start_payload):
 
         if not user_anime:
             # First hit → send file
-            msg = await bot.get_messages(Var.MAIN_CHANNEL, message_ids=msg_id)
+            msg = await bot.get_messages(Var.MAIN_CHANNEL, message_ids=int(msg_id))
             if msg and msg.document:
                 sent = await message.reply_document(msg.document.file_id)
                 await message.reply_text("File will be Auto Deleted in 1m, forward to Saved Messages.")
