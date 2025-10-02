@@ -55,20 +55,27 @@ class MongoDB:
     async def reboot(self):
         await self.__animes.drop()
 
+    # ------------- Msg ID Helpers ------------- #
+    async def get_msg_id(self, ani_id, ep, qual):
+        """
+        Return msg_id stored for this (ani, ep, qual).
+        """
+        info = await self.getEpisodeFileInfo(ani_id, ep, qual)
+        return info.get("msg_id")
+
+    async def set_msg_id(self, ani_id, ep, qual, msg_id):
+        """
+        Update/Insert msg_id for this (ani, ep, qual).
+        """
+        await self.saveAnime(ani_id, ep, qual, msg_id=msg_id)
+
     # ------------- Per-user delivery tracking ------------- #
     async def hasUserReceived(self, ani_id, ep, qual, user_id):
-        """
-        Check if a user has already received this file (per quality).
-        Stores user ids under episodes.{ep}.{qual}.users -> { "<user_id>": True }
-        """
         ep_info = (await self.getEpisodeFileInfo(ani_id, ep, qual)) or {}
         users = ep_info.get('users', {})
         return str(user_id) in users
 
     async def markUserReceived(self, ani_id, ep, qual, user_id):
-        """
-        Mark that a user received this file.
-        """
         ani_doc = await self.getAnime(ani_id)
         episodes = ani_doc.get('episodes', {})
         ep_key = str(ep)
