@@ -1,6 +1,6 @@
 # bot/core/auto_animes.py
 import asyncio
-from asyncio import Event, Lock
+from asyncio import Event
 from os import path as ospath
 from aiofiles.os import remove as aioremove
 from traceback import format_exc
@@ -11,24 +11,20 @@ from pyrogram.errors import RPCError
 from bot import bot, bot_loop, Var, ani_cache, ffQueue, ffLock, ff_queued
 from bot.core.database import db
 from .tordownload import TorDownloader
-from .func_utils import getfeed, editMessage, sendMessage, convertBytes
+from .func_utils import getfeed, encode, editMessage, sendMessage, convertBytes
 from .text_utils import TextEditor
 from .ffencoder import FFEncoder
 from .tguploader import TgUploader
 from .reporter import rep
 
-btn_formatter = {'1080': '1080p', '720': '720p', '480': '480p'}
+btn_formatter = {
+    '1080': '1080p',
+    '720': '720p',
+    '480': '480p'
+}
 
+# Read TG_PROTECT_CONTENT from env, default True
 PROTECT_CONTENT = True if getattr(Var, "TG_PROTECT_CONTENT", "1") == "1" else False
-
-# Per-episode+qual lock to prevent race
-episode_locks = {}
-
-def get_episode_lock(ani_id, ep_no, qual):
-    key = f"{ani_id}_{ep_no}_{qual}"
-    if key not in episode_locks:
-        episode_locks[key] = Lock()
-    return episode_locks[key]
 
 # ----------------- Fetch Animes -----------------
 async def fetch_animes():
@@ -134,10 +130,6 @@ async def get_animes(name, torrent, force=False):
                 return
 
             msg_id = uploaded_msg.id
-
-            # Save DB first to prevent race in PM
-            await db.saveAnime(ani_id, ep_no, qual, msg_id=msg_id, post_id=post_id)
-
             # Button URL triggers bot PM with start payload
             btn_label = btn_formatter.get(qual, qual)
             btns.append([InlineKeyboardButton(
@@ -149,6 +141,9 @@ async def get_animes(name, torrent, force=False):
                 await editMessage(post_msg, post_msg.caption.html if post_msg.caption else "", InlineKeyboardMarkup(btns))
             except Exception as e:
                 await rep.report(f"Failed to edit post buttons: {e}", "error")
+
+            # Save DB
+            await db.saveAnime(ani_id, ep_no, qual, msg_id=msg_id, post_id=post_id)
 
             bot_loop.create_task(extra_utils(msg_id, out_path))
 
@@ -165,6 +160,7 @@ async def get_animes(name, torrent, force=False):
     except Exception:
         await rep.report(format_exc(), "error")
 
+
 # ----------------- Handle /start in PM -----------------
 @bot.on_message(filters.private & filters.command("start"))
 async def start_pm_handler(client, message):
@@ -173,7 +169,7 @@ async def start_pm_handler(client, message):
     except:
         return
 
-    # Parse payload
+    # Parse payload from deep-link
     if len(message.command) < 2:
         await message.reply("Welcome! Use the buttons in channel posts to get files.")
         return
@@ -186,36 +182,45 @@ async def start_pm_handler(client, message):
         await message.reply("Invalid payload.")
         return
 
-    # Acquire lock to avoid race
-    lock = get_episode_lock(ani_id, ep_no, qual)
-    async with lock:
-        # Check if user already got file
-        already = await db.hasUserReceived(ani_id, ep_no, qual, user_id)
+    already = await db.hasUserReceived(ani_id, ep_no, qual, user_id)
 
-        # Get uploaded file info
-        ep_info = await db.getEpisodeFileInfo(ani_id, ep_no, qual)
-        msg_id = ep_info.get("msg_id")
-
-        if not msg_id:
-            return await message.reply("⏳ File is being prepared. Please try again in a few minutes.")
-
-        if not already:
-            # First click → send file
-            await send_file_pm(user_id, msg_id, ani_id, ep_no, qual)
+    if not already:
+        # First click → send file
+        await send_file_pm(user_id, ani_id, ep_no, qual)
+    else:
+        # Subsequent clicks → website link
+        website = getattr(Var, "WEBSITE", None) or getattr(Var, "WEBSITE_URL", None)
+        if website:
+            await message.reply(f"🔗 Visit website for re-download:\n{website}")
         else:
-            # Subsequent clicks → website link
-            website = getattr(Var, "WEBSITE", None) or getattr(Var, "WEBSITE_URL", None)
-            if website:
-                await message.reply(f"🔗 Visit website for re-download:\n{website}")
-            else:
-                await message.reply("🔗 Website not configured.")
+            await message.reply("🔗 Website not configured.")
 
-# ----------------- Send File PM -----------------
-async def send_file_pm(user_id, msg_id, ani_id, ep_no, qual):
+
+# ----------------- Send File PM (Fixed) -----------------
+async def send_file_pm(user_id, ani_id, ep_no, qual):
     try:
-        file_msg = await bot.get_messages(Var.FILE_STORE, message_ids=msg_id)
-        sent_msg = None
+        file_msg = None
+        retries = 3
+        for attempt in range(retries):
+            try:
+                file_info = await db.getEpisodeFileInfo(ani_id, ep_no, qual)
+                msg_id = file_info.get('msg_id')
+                if not msg_id:
+                    raise ValueError("msg_id not found in DB")
+                file_msg = await bot.get_messages(Var.FILE_STORE, message_ids=int(msg_id))
+                if file_msg:
+                    break
+            except Exception:
+                if attempt < retries - 1:
+                    await asyncio.sleep(1.5)
+                else:
+                    raise
 
+        if not file_msg:
+            await bot.send_message(user_id, "⏳ File is being prepared. Please try again in a few minutes.")
+            return
+
+        sent_msg = None
         if file_msg.document:
             sent_msg = await bot.send_document(
                 chat_id=user_id,
@@ -236,12 +241,13 @@ async def send_file_pm(user_id, msg_id, ani_id, ep_no, qual):
             delay = int(getattr(Var, "DEL_TIMER", 300))
             bot_loop.create_task(auto_delete_message(user_id, sent_msg.id, delay))
 
-    except RPCError as e:
+    except Exception as e:
         err = str(e)
-        if "bot can't initiate conversation" in err or "user is deactivated" in err or "forbidden" in err.lower():
+        if "bot can't initiate conversation" in err.lower() or "forbidden" in err.lower():
             return
         else:
             await bot.send_message(user_id, f"Error sending file: {e}")
+
 
 # ----------------- Auto Delete -----------------
 async def auto_delete_message(chat_id, msg_id, delay):
@@ -250,6 +256,7 @@ async def auto_delete_message(chat_id, msg_id, delay):
         await bot.delete_messages(chat_id, msg_id)
     except:
         pass
+
 
 # ----------------- Extra Utils -----------------
 async def extra_utils(msg_id, out_path):
