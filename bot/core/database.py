@@ -1,3 +1,4 @@
+# bot/core/database.py
 from motor.motor_asyncio import AsyncIOMotorClient
 from bot import Var
 
@@ -5,6 +6,7 @@ class MongoDB:
     def __init__(self, uri, database_name):
         self.__client = AsyncIOMotorClient(uri)
         self.__db = self.__client[database_name]
+        # collection per bot instance
         self.__animes = self.__db.animes[Var.BOT_TOKEN.split(':')[0]]
 
     # ----------------- Basic Anime DB ----------------- #
@@ -13,6 +15,11 @@ class MongoDB:
         return doc or {}
 
     async def saveAnime(self, ani_id, ep, qual, msg_id=None, post_id=None):
+        """
+        Save that this quality has been uploaded for (ani_id, ep).
+        msg_id = message id of the uploaded file in Var.FILE_STORE.
+        post_id = post id in Var.MAIN_CHANNEL where buttons live.
+        """
         ep_key = str(ep)
         anime = await self.getAnime(ani_id)
         episodes = anime.get('episodes', {})
@@ -37,6 +44,14 @@ class MongoDB:
         anime = await self.getAnime(ani_id)
         return anime.get('episodes', {}).get(str(ep), {}).get(qual, {})
 
+    async def getAllAnime(self):
+        cursor = self.__animes.find({})
+        all_docs = await cursor.to_list(length=None)
+        return {doc["_id"]: doc for doc in all_docs if "_id" in doc}
+
+    async def reboot(self):
+        await self.__animes.drop()
+
     # ------------- Per-user delivery tracking ------------- #
     async def hasUserReceived(self, ani_id, ep, qual, user_id):
         ep_info = (await self.getEpisodeFileInfo(ani_id, ep, qual)) or {}
@@ -59,5 +74,5 @@ class MongoDB:
 
         await self.__animes.update_one({'_id': ani_id}, {'$set': {'episodes': episodes}}, upsert=True)
 
-# singleton db
+# Singleton instance
 db = MongoDB(Var.MONGO_URI, "FZAutoAnimes")
