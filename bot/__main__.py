@@ -1,16 +1,22 @@
-from asyncio import create_task, all_tasks, sleep as asleep
+# main.py
+from asyncio import create_task, create_subprocess_exec, all_tasks, sleep as asleep
 from aiofiles import open as aiopen
 from pyrogram import idle
 from pyrogram.filters import command, user
-from os import execl, kill, path as ospath
+from pyrogram.types import CallbackQuery
+from os import path as ospath, execl, kill
 from sys import executable
 from signal import SIGKILL
+import threading
 
 from bot import bot, Var, bot_loop, sch, LOGS, ffQueue, ffLock, ff_queued, ffpids_cache
-from bot.core.auto_animes import fetch_animes
+from bot.core.auto_animes import fetch_animes, start_pm_handler
 from bot.core.func_utils import clean_up, new_task
 from bot.modules.up_posts import upcoming_animes
+from bot.core.database import db
+from web import run_web
 
+# ------------------ Restart command ------------------
 @bot.on_message(command('restart') & user(Var.ADMINS))
 @new_task
 async def restart_cmd(client, message):
@@ -23,9 +29,10 @@ async def restart_cmd(client, message):
             try:
                 LOGS.info(f"Process ID : {pid}")
                 kill(pid, SIGKILL)
-            except:
+            except (OSError, ProcessLookupError):
+                LOGS.error("Killing Process Failed !!")
                 continue
-    await (await create_task('python3 update.py')).wait()
+    await (await create_subprocess_exec('python3', 'update.py')).wait()
     async with aiopen(".restartmsg", "w") as f:
         await f.write(f"{rmessage.chat.id}\n{rmessage.id}\n")
     execl(executable, executable, "-m", "bot")
@@ -36,9 +43,39 @@ async def restart():
             chat_id, msg_id = map(int, f)
         try:
             await bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text="<i>Restarted !</i>")
-        except:
-            pass
+        except Exception as e:
+            LOGS.error(e)
 
+# ---------------- Inline Button Handler ----------------
+@bot.on_callback_query()
+async def inline_button_handler(client, callback_query: CallbackQuery):
+    data = callback_query.data or ""
+    if not data:
+        return await callback_query.answer()
+
+    if data.startswith("sendfile|"):
+        # format: sendfile|{ani_id}|{ep}|{qual}|{msg_id}
+        parts = data.split("|")
+        if len(parts) != 5:
+            return await callback_query.answer("Invalid button data.", show_alert=True)
+        _, ani_id, ep, qual, msg_id = parts
+        try:
+            ep = int(ep)
+            msg_id = int(msg_id)
+        except Exception:
+            return await callback_query.answer("Invalid episode or message id.", show_alert=True)
+
+        # Call start_pm_handler directly with constructed payload
+        # Simulate deep-link payload: start <ani_id>_<ep>_<qual>
+        class FakeMessage:
+            from_user = type('obj', (object,), {'id': callback_query.from_user.id})
+            command = ['start', f"{ani_id}_{ep}_{qual}"]
+            async def reply(self, text):
+                return await callback_query.message.reply(text)
+
+        await start_pm_handler(bot, FakeMessage())
+
+# ------------------ Queue loop ------------------
 async def queue_loop():
     LOGS.info("Queue Loop Started !!")
     while True:
@@ -51,6 +88,7 @@ async def queue_loop():
                 ffQueue.task_done()
         await asleep(10)
 
+# ------------------ Main ------------------
 async def main():
     sch.add_job(upcoming_animes, "cron", hour=0, minute=30)
     await bot.start()
@@ -62,13 +100,13 @@ async def main():
     await idle()
     LOGS.info('Auto Anime Bot Stopped!')
     await bot.stop()
-    for task in all_tasks():
+    for task in all_tasks:
         task.cancel()
     await clean_up()
     LOGS.info('Finished AutoCleanUp !!')
 
 if __name__ == '__main__':
-    import threading
-    from web import run_web
+    # Start the web server in a background thread (for Koyeb health check)
     threading.Thread(target=run_web, daemon=True).start()
+    # Start the bot loop
     bot_loop.run_until_complete(main())
