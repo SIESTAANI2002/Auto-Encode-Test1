@@ -1,3 +1,4 @@
+# bot/core/database.py
 from motor.motor_asyncio import AsyncIOMotorClient  
 from bot import Var  
 
@@ -6,8 +7,11 @@ class MongoDB:
         self.__client = AsyncIOMotorClient(uri)
         self.__db = self.__client[database_name]
         self.__animes = self.__db.animes[Var.BOT_TOKEN.split(':')[0]]
-        self.__user_animes = self.__db.user_animes  # new collection for per-user tracking
+        self.__user_animes = self.__db.user_animes  # collection for per-user tracking
 
+    # ----------------------
+    # Anime quality storage
+    # ----------------------
     async def getAnime(self, ani_id):
         botset = await self.__animes.find_one({'_id': ani_id})
         return botset or {}
@@ -19,9 +23,9 @@ class MongoDB:
         if post_id:
             await self.__animes.update_one({'_id': ani_id}, {'$set': {"msg_id": post_id}}, upsert=True)
 
-    # ------------------------
-    # New functions for user hit tracking
-    # ------------------------
+    # ----------------------
+    # Per-user hit tracking
+    # ----------------------
     async def get_user_anime(self, user_id, ani_id):
         """Return document if user already got this anime"""
         return await self.__user_animes.find_one({'user_id': user_id, 'anime_id': ani_id})
@@ -34,7 +38,11 @@ class MongoDB:
             upsert=True
         )
 
+    # ----------------------
+    # Drop all anime data
+    # ----------------------
     async def reboot(self):
         await self.__animes.drop()
 
+# Single instance
 db = MongoDB(Var.MONGO_URI, "FZAutoAnimes")
