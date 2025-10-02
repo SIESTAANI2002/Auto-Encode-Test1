@@ -179,7 +179,7 @@ async def handle_start(client, message, start_payload):
 
     user_id = message.from_user.id
 
-    # Check if user already received this anime
+    # Check in DB if user already received this anime
     user_record = await db.getAnime(ani_id)
     already_received = user_record.get("users", {}).get(str(user_id), False)
 
@@ -189,7 +189,7 @@ async def handle_start(client, message, start_payload):
         return
 
     # First hit → send the file
-    msg = await client.get_messages(Var.MAIN_CHANNEL, message_ids=msg_id)
+    msg = await client.get_messages(Var.FILE_STORE, message_ids=msg_id)
     if not msg:
         await message.reply("File not found!")
         return
