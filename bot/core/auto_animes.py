@@ -22,7 +22,7 @@ btn_formatter = {
     '480': '480p'
 }
 
-# Protect content from env
+# Read TG_PROTECT_CONTENT from env, default True
 PROTECT_CONTENT = True if getattr(Var, "TG_PROTECT_CONTENT", "1") == "1" else False
 
 # ----------------- Fetch Animes -----------------
@@ -74,7 +74,7 @@ async def get_animes(name, torrent, force=False):
             f"‣ <b>Anime Name :</b> <b><i>{name}</i></b>\n\n<i>Downloading...</i>"
         )
 
-        # Download with a few retries
+        # Download with retries
         dl = None
         for attempt in range(3):
             dl = await TorDownloader("./downloads").download(torrent, name)
@@ -130,12 +130,13 @@ async def get_animes(name, torrent, force=False):
                 return
 
             msg_id = uploaded_msg.id
-            # Deep-link for first-time users
-            deep_link = f"https://t.me/{Var.BOT_USERNAME}?start=autofile-{ani_id}-{ep_no}-{qual}-{msg_id}"
+            # Deep-link safe: only use IDs, not names
+            callback_data = f"sendfile|{int(ani_id)}|{int(ep_no)}|{qual}|{int(msg_id)}"
 
             # Buttons
             if post_msg:
                 btn_label = btn_formatter.get(qual, qual)
+                deep_link = f"https://t.me/{Var.BOT_USERNAME}?start=autofile-{int(ani_id)}-{int(ep_no)}-{qual}-{int(msg_id)}"
                 new_btn = InlineKeyboardButton(
                     f"{btn_label} - {convertBytes(uploaded_msg.document.file_size)}",
                     url=deep_link
@@ -155,7 +156,7 @@ async def get_animes(name, torrent, force=False):
         try: await stat_msg.delete()
         except: pass
 
-        # Delete original torrent **after all encodes**
+        # Delete original torrent
         try: await aioremove(dl)
         except: pass
 
@@ -167,53 +168,52 @@ async def get_animes(name, torrent, force=False):
 
 # ----------------- Handle Bot Start -----------------
 async def handle_autofile_start(client, message):
-    """
-    Handles /start autofile-<ani_id>-<ep_no>-<qual>-<msg_id>
-    First click → file
-    Second click → website
-    """
+    """Handle /start with autofile link"""
+    if not message.text.startswith("/start autofile-"):
+        return
+
     try:
-        args = message.text.split("-")
-        if len(args) != 5:
-            await message.reply_text("Invalid link or code.")
-            return
-        _, ani_id, ep_no, qual, msg_id = args
+        parts = message.text.split("-")
+        _, ani_id, ep_no, qual, msg_id = parts
+        ani_id, ep_no, msg_id = int(ani_id), int(ep_no), int(msg_id)
+    except Exception:
+        await message.reply_text("❌ Invalid link or code.")
+        return
 
-        user_id = message.from_user.id
-
-        already = await db.hasUserReceived(ani_id, ep_no, qual, user_id)
-        if not already:
-            # Get original file
-            file_msg = await bot.get_messages(Var.FILE_STORE, message_ids=int(msg_id))
+    user_id = message.from_user.id
+    already = await db.hasUserReceived(ani_id, ep_no, qual, user_id)
+    if not already:
+        try:
+            file_msg = await bot.get_messages(Var.FILE_STORE, message_ids=msg_id)
             sent_msg = None
             if file_msg.document:
                 sent_msg = await bot.send_document(
                     chat_id=user_id,
                     document=file_msg.document.file_id,
-                    caption=f"✅ File delivered. Auto-deletes in {int(getattr(Var,'DEL_TIMER',300))//60} min.",
+                    caption=f"✅ File delivered. Auto-deletes in {int(getattr(Var, 'DEL_TIMER', 300))//60} min.",
                     protect_content=PROTECT_CONTENT
                 )
             elif file_msg.video:
                 sent_msg = await bot.send_video(
                     chat_id=user_id,
                     video=file_msg.video.file_id,
-                    caption=f"✅ File delivered. Auto-deletes in {int(getattr(Var,'DEL_TIMER',300))//60} min.",
+                    caption=f"✅ File delivered. Auto-deletes in {int(getattr(Var, 'DEL_TIMER', 300))//60} min.",
                     protect_content=PROTECT_CONTENT
                 )
 
             if sent_msg:
                 await db.markUserReceived(ani_id, ep_no, qual, user_id)
-                bot_loop.create_task(auto_delete_message(user_id, sent_msg.id, int(getattr(Var,'DEL_TIMER',300))))
-        else:
-            # Second click → website
-            website = getattr(Var, "WEBSITE", None) or getattr(Var, "WEBSITE_URL", None)
-            if website:
-                await message.reply_text(f"🔗 Visit website for re-download:\n{website}")
-            else:
-                await message.reply_text("🔗 Website not configured.")
+                delay = int(getattr(Var, "DEL_TIMER", 300))
+                bot_loop.create_task(auto_delete_message(user_id, sent_msg.id, delay))
 
-    except Exception as e:
-        await message.reply_text(f"Error: {e}")
+        except Exception as e:
+            await message.reply_text(f"❌ Error sending file: {e}")
+    else:
+        website = getattr(Var, "WEBSITE", None) or getattr(Var, "WEBSITE_URL", None)
+        if website:
+            await message.reply_text(f"🔗 Visit website for re-download:\n{website}")
+        else:
+            await message.reply_text("🔗 Website not configured.")
 
 
 # ----------------- Auto Delete -----------------
