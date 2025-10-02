@@ -10,6 +10,7 @@ from traceback import format_exc
 from asyncio import sleep as asleep, create_subprocess_shell
 from asyncio.subprocess import PIPE
 from base64 import urlsafe_b64encode, urlsafe_b64decode
+import base64
 
 from aiohttp import ClientSession
 from aiofiles import open as aiopen
@@ -203,3 +204,8 @@ def convertBytes(sz) -> str:
         sz /= 2**10
         ind += 1
     return f"{round(sz, 2)} {Units[ind]}B"
+
+async def decode(text):
+    # decode Base64 safely
+    padded = text + '=' * (-len(text) % 4)  # pad Base64 if needed
+    return base64.urlsafe_b64decode(padded).decode()
