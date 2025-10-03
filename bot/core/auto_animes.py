@@ -129,7 +129,7 @@ async def get_animes(name, torrent, force=False):
             await rep.report(f"✅ Successfully Uploaded {qual} File to Tg...", "info")
             msg_id = msg.id
 
-            # Create Base64 button payload
+            # Base64 button payload
             payload = f"anime-{ani_id}-{msg_id}-{qual}"
             encoded_payload = base64.urlsafe_b64encode(payload.encode()).decode()
             link = f"https://t.me/{(await bot.get_me()).username}?start={encoded_payload}"
@@ -153,18 +153,22 @@ async def get_animes(name, torrent, force=False):
             # Save in DB
             await db.saveAnime(ani_id, ep_no, qual, msg_id)
 
-            # Extra utils (backup etc.)
+            # Backup & cleanup task
             bot_loop.create_task(extra_utils(msg_id, out_path))
 
         ffLock.release()
         await stat_msg.delete()
 
-        # Cleanup original file after all qualities
-        await aioremove(dl)
+        # Cleanup original torrent file
+        if ospath.exists(dl):
+            await aioremove(dl)
+            await rep.report(f"Deleted original torrent file: {dl}", "info")
+
         ani_cache.setdefault('completed', set()).add(ani_id)
 
     except Exception:
         await rep.report(format_exc(), "error")
+
 
 # ----------------------
 # /start handler logic
@@ -223,7 +227,7 @@ async def handle_start(client, message, start_payload):
     # Mark in DB
     await db.mark_user_anime(user_id, ani_id, qual)
 
-    # Auto delete with notice
+    # Auto-delete PM message after DEL_TIMER
     if getattr(Var, "AUTO_DEL", False):
         try:
             timer = int(getattr(Var, "DEL_TIMER", 60))
@@ -238,14 +242,17 @@ async def handle_start(client, message, start_payload):
                 chat_id=message.chat.id,
                 text="⏳ File has been auto-deleted!"
             )
-        except:
-            pass
+            await rep.report(f"Auto-deleted file for user {user_id} ({qual})", "info")
+        except Exception:
+            await rep.report(f"Failed auto-delete for user {user_id} ({qual})", "error")
+
 
 # ----------------------
-# Extra utils
+# Extra utils: backup & local cleanup
 # ----------------------
 async def extra_utils(msg_id, out_path):
     try:
+        # Backup to other channels
         msg = await bot.get_messages(Var.FILE_STORE, message_ids=msg_id)
         if Var.BACKUP_CHANNEL and Var.BACKUP_CHANNEL != "0":
             for chat_id in Var.BACKUP_CHANNEL.split():
@@ -253,5 +260,9 @@ async def extra_utils(msg_id, out_path):
                     await msg.copy(int(chat_id))
                 except Exception:
                     pass
+        # Delete local encoded file after backup
+        if ospath.exists(out_path):
+            await aioremove(out_path)
+            await rep.report(f"Deleted local encoded file: {out_path}", "info")
     except Exception:
         await rep.report(format_exc(), "error")
