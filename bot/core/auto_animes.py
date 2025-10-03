@@ -129,7 +129,7 @@ async def get_animes(name, torrent, force=False):
             msg_id = msg.id
 
             # Create Base64 button payload
-            payload = f"anime-{ani_id}-{msg_id}"
+            payload = f"anime-{ani_id}-{msg_id}-{qual}"
             encoded_payload = base64.urlsafe_b64encode(payload.encode()).decode()
             link = f"https://t.me/{(await bot.get_me()).username}?start={encoded_payload}"
 
@@ -172,7 +172,8 @@ async def handle_start(client, message, start_payload):
     try:
         parts = start_payload.split("-")
         ani_id = parts[1]
-        msg_id = int(parts[2])
+        qual = parts[2]
+        msg_id = int(parts[3])
     except:
         await message.reply("Invalid payload!")
         return
@@ -180,7 +181,7 @@ async def handle_start(client, message, start_payload):
     user_id = message.from_user.id
 
     # Check if user already received this anime
-    already_received = await db.get_user_anime(user_id, ani_id)
+    already_received = await db.get_user_anime(user_id, ani_id, qual)
 
     if already_received and already_received.get("got_file", False):
         # Second hit → send website link
@@ -205,7 +206,7 @@ async def handle_start(client, message, start_payload):
         return
 
     # Mark user as received immediately
-    await db.mark_user_anime(user_id, ani_id)
+    await db.mark_user_anime(user_id, ani_id, qual)
 
     # --------------------
     # Auto-delete using config
