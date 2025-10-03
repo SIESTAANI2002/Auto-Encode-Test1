@@ -1,10 +1,11 @@
 from asyncio import create_task, create_subprocess_exec, all_tasks, sleep as asleep
 from aiofiles import open as aiopen
-from pyrogram import idle, filters
+from pyrogram import idle
 from pyrogram.filters import command, user
 from os import path as ospath, execl, kill
 from sys import executable
 from signal import SIGKILL
+from pyrogram import filters
 import base64
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -18,36 +19,8 @@ from bot.modules.up_posts import upcoming_animes
 # ----------------------
 @bot.on_message(filters.command("start"))
 async def start(client, message):
-    if message.chat.type == "private":
-        # Private chat: show photo + buttons
-        caption = Var.START_MSG.format(first_name=message.from_user.first_name)
-        btn_rows = []
-
-        if getattr(Var, "START_BUTTONS", None):
-            buttons = Var.START_BUTTONS.split()
-            temp_row = []
-            for i, b in enumerate(buttons):
-                if "|" not in b:
-                    continue
-                text, url = b.split("|", 1)
-                temp_row.append(InlineKeyboardButton(text, url=url))
-                # First row: first two buttons, second row: remaining
-                if i == 1:
-                    btn_rows.append(temp_row)
-                    temp_row = []
-            if temp_row:
-                btn_rows.append(temp_row)
-
-        await client.send_photo(
-            chat_id=message.chat.id,
-            photo=Var.START_PHOTO,
-            caption=caption,
-            reply_markup=InlineKeyboardMarkup(btn_rows) if btn_rows else None
-        )
-        return
-
-    # Otherwise handle encoded payload (channel/group)
     if len(message.command) > 1:
+        # decode Base64 payload
         start_payload = message.text.split(" ", 1)[1]
         try:
             padded = start_payload + '=' * (-len(start_payload) % 4)
@@ -57,6 +30,33 @@ async def start(client, message):
             return
         await handle_start(client, message, decoded_payload)
 
+    else:
+        # Show start photo + buttons
+        start_photo = getattr(Var, "START_PHOTO", None)
+        start_msg = getattr(Var, "START_MSG", "Hello! Use the buttons in private chat to get your file.")
+        start_buttons = getattr(Var, "START_BUTTONS", "")
+        btns = []
+        if start_buttons:
+            for b in start_buttons.split():
+                try:
+                    label, url = b.split("|")
+                    btns.append([InlineKeyboardButton(label, url=url)])
+                except:
+                    continue
+
+        if start_photo:
+            await client.send_photo(
+                chat_id=message.chat.id,
+                photo=start_photo,
+                caption=start_msg.format(first_name=message.from_user.first_name),
+                reply_markup=InlineKeyboardMarkup(btns) if btns else None
+            )
+        else:
+            await client.send_message(
+                chat_id=message.chat.id,
+                text=start_msg.format(first_name=message.from_user.first_name),
+                reply_markup=InlineKeyboardMarkup(btns) if btns else None
+            )
 
 # ----------------------
 # Restart command
@@ -81,7 +81,6 @@ async def restart_cmd(client, message):
         await f.write(f"{rmessage.chat.id}\n{rmessage.id}\n")
     execl(executable, executable, "-m", "bot")
 
-
 # ----------------------
 # Post-restart handler
 # ----------------------
@@ -93,7 +92,6 @@ async def restart():
             await bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text="<i>Restarted !</i>")
         except Exception as e:
             LOGS.error(e)
-
 
 # ----------------------
 # FF queue loop
@@ -110,7 +108,6 @@ async def queue_loop():
                 ffQueue.task_done()
         await asleep(10)
 
-
 # ----------------------
 # Main function
 # ----------------------
@@ -125,11 +122,10 @@ async def main():
     await idle()
     LOGS.info('Auto Anime Bot Stopped!')
     await bot.stop()
-    for task in all_tasks:
+    for task in all_tasks():
         task.cancel()
     await clean_up()
     LOGS.info('Finished AutoCleanUp !!')
-
 
 # ----------------------
 # Entry point
