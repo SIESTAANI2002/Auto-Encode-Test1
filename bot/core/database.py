@@ -57,8 +57,8 @@ class MongoDB:
                 .get(str(ep_no), {})
                 .get(str(qual), False)
         )
-        
-# ----------------------
+
+    # ----------------------
     # Drop all anime data
     # ----------------------
     async def reboot(self):
