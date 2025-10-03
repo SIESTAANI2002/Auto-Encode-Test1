@@ -4,7 +4,7 @@ from bot import Var
 
 class MongoDB:
     def __init__(self, uri: str, db_name: str = "animebot"):
-        self.client = motor.motor_asyncio.AsyncIOMotorClient(uri)
+        self.client = AsyncIOMotorClient(uri)
         self.db = self.client[db_name]
 
         # collections
