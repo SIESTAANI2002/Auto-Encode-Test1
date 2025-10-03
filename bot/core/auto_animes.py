@@ -169,17 +169,12 @@ async def get_animes(name, torrent, force=False):
 # ----------------------
 # /start handler logic
 # ----------------------
-# ----------------------
-# /start handler logic (no base64, direct payload)
-# ----------------------
-# ----------------------
-# /start handler logic
-# ----------------------
 async def handle_start(client, message, start_payload):
     try:
-        # Decode payload
-        decoded = base64.urlsafe_b64decode(start_payload).decode()
-        # payload format: anime-ani_id-ep_no-qual-msg_id
+        # Decode Base64 safely
+        padded = start_payload + '=' * (-len(start_payload) % 4)  # pad if needed
+        decoded = base64.urlsafe_b64decode(padded).decode()
+        # Expected format: anime-ani_id-ep_no-qual-msg_id
         parts = decoded.split("-")
         if len(parts) != 5 or parts[0] != "anime":
             await message.reply("Invalid payload!")
@@ -197,7 +192,6 @@ async def handle_start(client, message, start_payload):
 
     # Check if user already got this anime+ep+qual
     if await db.get_user_anime(user_id, ani_id, ep_no, qual):
-        # Send website link on second hit
         if getattr(Var, "WEBSITE", None):
             await message.reply(f"🎬 You already received {qual} of this episode!\nVisit: {Var.WEBSITE} for Re-download")
         else:
