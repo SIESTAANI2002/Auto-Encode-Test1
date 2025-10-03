@@ -1,11 +1,12 @@
-from asyncio import create_task, create_subprocess_exec, all_tasks, sleep as asleep
+from asyncio import create_task, create_subprocess_exec, create_subprocess_shell, run as asyrun, all_tasks, gather, sleep as asleep
 from aiofiles import open as aiopen
 from pyrogram import idle
 from pyrogram.filters import command, user
-from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from os import path as ospath, execl, kill
 from sys import executable
 from signal import SIGKILL
+from pyrogram import filters
+from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 import base64
 
 from bot import bot, Var, bot_loop, sch, LOGS, ffQueue, ffLock, ffpids_cache, ff_queued
@@ -16,14 +17,9 @@ from bot.modules.up_posts import upcoming_animes
 # ----------------------
 # /start command handler
 # ----------------------
-@bot.on_message(command("start"))
+@bot.on_message(filters.command("start"))
 async def start(client, message):
-    # If not private → simple info
-    if message.chat.type != "private":
-        await message.reply("Hello! Use the buttons in private chat to get your file.")
-        return
-
-    # Payload exists → handle anime button
+    # Payload exists → handle anime button click
     if len(message.command) > 1:
         start_payload = message.text.split(" ", 1)[1]
         try:
@@ -33,8 +29,10 @@ async def start(client, message):
             await message.reply("Input Link is Invalid for Usage !")
             return
         await handle_start(client, message, decoded_payload)
-    else:
-        # No payload → show welcome photo/message/buttons
+        return
+
+    # No payload → welcome message only in private chat
+    if message.chat.type == "private":
         buttons = []
         if getattr(Var, "START_BUTTONS", None):
             for btn in Var.START_BUTTONS.split():
@@ -47,6 +45,9 @@ async def start(client, message):
             caption=Var.START_MSG.format(first_name=message.from_user.first_name),
             reply_markup=InlineKeyboardMarkup(buttons) if buttons else None
         )
+    else:
+        # Optional: ignore in groups/channels or show notice
+        await message.reply("Hello! Use the buttons in private chat to get your file.")
 
 # ----------------------
 # Restart command
@@ -58,7 +59,7 @@ async def restart_cmd(client, message):
     if sch.running:
         sch.shutdown(wait=False)
     await clean_up()
-    if len(ffpids_cache) != 0:
+    if len(ffpids_cache) != 0: 
         for pid in ffpids_cache:
             try:
                 LOGS.info(f"Process ID : {pid}")
@@ -112,7 +113,7 @@ async def main():
     await idle()
     LOGS.info('Auto Anime Bot Stopped!')
     await bot.stop()
-    for task in all_tasks():
+    for task in all_tasks:
         task.cancel()
     await clean_up()
     LOGS.info('Finished AutoCleanUp !!')
