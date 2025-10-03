@@ -170,10 +170,13 @@ async def handle_start(client, message, start_payload):
     user_id = message.from_user.id
 
     try:
-        # Normalize Base64 (safe for URL)
+        # Fix URL-safe Base64 payload
         start_payload = start_payload.replace(" ", "+").strip()
-        padded = start_payload + '=' * (-len(start_payload) % 4)
-        decoded_bytes = base64.urlsafe_b64decode(padded)
+        # Add padding if missing
+        missing_padding = len(start_payload) % 4
+        if missing_padding:
+            start_payload += "=" * (4 - missing_padding)
+        decoded_bytes = base64.urlsafe_b64decode(start_payload)
         decoded = decoded_bytes.decode()
         parts = decoded.split("-")
         if len(parts) != 5:
