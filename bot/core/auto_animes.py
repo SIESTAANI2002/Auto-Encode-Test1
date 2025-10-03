@@ -171,8 +171,6 @@ async def get_animes(name, torrent, force=False):
 # ----------------------
 async def handle_start(client, message, start_payload):
     try:
-        decoded = base64.urlsafe_b64decode(start_payload).decode()
-        # payload = anime-ani_id-ep_no-qual-msg_id
         _, ani_id, ep_no, qual, msg_id = decoded.split("-")
         msg_id = int(msg_id)
     except:
