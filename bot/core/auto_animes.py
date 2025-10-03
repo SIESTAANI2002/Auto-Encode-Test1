@@ -142,7 +142,7 @@ async def get_animes(name, torrent, force=False):
 
             # Create Base64 button payload safely
             payload = f"anime-{ani_id}-{ep_no}-{qual}-{msg_id}"
-            encoded_payload = encode_payload(payload)
+            encoded_payload = base64.urlsafe_b64encode(payload.encode()).decode()  # KEEP padding
             link = f"https://t.me/{(await bot.get_me()).username}?start={encoded_payload}"
 
             # Telegram buttons
