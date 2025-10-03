@@ -182,7 +182,7 @@ async def handle_start(client, message, start_payload):
     user_id = message.from_user.id
 
     # Check if already got this anime
-    if await db.get_user_anime(user_id, ani_id):
+    if await db.get_user_anime(user_id, qual, ani_id):
         # Send website link on second hit
         if getattr(Var, "WEBSITE", None):
             await message.reply(f"🎬 You already received this anime!\nVisit: {Var.WEBSITE}")
@@ -221,7 +221,7 @@ async def handle_start(client, message, start_payload):
         return
 
     # Mark in DB
-    await db.mark_user_anime(user_id, ani_id)
+    await db.mark_user_anime(user_id, qual, ani_id)
 
     # Auto delete with notice
     if getattr(Var, "AUTO_DEL", False):
