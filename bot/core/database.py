@@ -3,51 +3,57 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from bot import Var  
 
 class MongoDB:
-    def __init__(self, uri, database_name):
-        self.__client = AsyncIOMotorClient(uri)
-        self.__db = self.__client[database_name]
-        self.__animes = self.__db.animes[Var.BOT_TOKEN.split(':')[0]]
-        self.__user_animes = self.__db.user_animes  # collection for per-user tracking
+    def __init__(self, uri: str, db_name: str = "animebot"):
+        self.client = motor.motor_asyncio.AsyncIOMotorClient(uri)
+        self.db = self.client[db_name]
 
-    # ----------------------
-    # Anime quality storage
-    # ----------------------
-    async def getAnime(self, ani_id):
-        botset = await self.__animes.find_one({'_id': ani_id})
-        return botset or {}
+        # collections
+        self.animes = self.db["animes"]       # stores anime -> episode -> quality -> msg_id
+        self.user_animes = self.db["user_animes"]  # stores which user got which quality
 
-    async def saveAnime(self, ani_id, ep, qual, post_id=None):
-        quals = (await self.getAnime(ani_id)).get(ep, {qual: False for qual in Var.QUALS})
-        quals[qual] = True
-        await self.__animes.update_one({'_id': ani_id}, {'$set': {ep: quals}}, upsert=True)
-        if post_id:
-            await self.__animes.update_one({'_id': ani_id}, {'$set': {"msg_id": post_id}}, upsert=True)
-
-    # ----------------------
-    # Per-user hit tracking
-    # ----------------------
-    async def get_user_anime(self, user_id, ani_id, ep_no, qual):
-        """Return document if user already got this anime+ep+quality"""
-        return await self.__user_animes.find_one({
-            'user_id': user_id,
-            'anime_id': ani_id,
-            'episode': ep_no,
-            'quality': qual
-        })
-
-    async def mark_user_anime(self, user_id, ani_id, ep_no, qual):
-        """Mark that user received this anime+ep+quality"""
-        await self.__user_animes.update_one(
-            {'user_id': user_id, 'anime_id': ani_id, 'episode': ep_no, 'quality': qual},
-            {'$set': {'got_file': True}},
+    # --------------------
+    # Anime storage
+    # --------------------
+    async def saveAnime(self, ani_id: str, ep_no: str, qual: str, msg_id: int):
+        """
+        Save msg_id for a specific anime-episode-quality.
+        """
+        await self.animes.update_one(
+            {"ani_id": str(ani_id)},
+            {"$set": {f"episodes.{ep_no}.{qual}": msg_id}},
             upsert=True
         )
 
-    # ----------------------
-    # Drop all anime data
-    # ----------------------
-    async def reboot(self):
-        await self.__animes.drop()
+    async def getAnime(self, ani_id: str):
+        """
+        Get dict of episodes for this anime.
+        """
+        doc = await self.animes.find_one({"ani_id": str(ani_id)})
+        return doc.get("episodes", {}) if doc else {}
 
-# Single instance
-db = MongoDB(Var.MONGO_URI, "FZAutoAnimes")
+    # --------------------
+    # User tracking
+    # --------------------
+    async def mark_user_anime(self, user_id: int, ani_id: str, ep_no: str, qual: str):
+        """
+        Mark that a user has received a specific anime episode quality.
+        """
+        await self.user_animes.update_one(
+            {"user_id": int(user_id)},
+            {"$set": {f"received.{ani_id}.{ep_no}.{qual}": True}},
+            upsert=True
+        )
+
+    async def get_user_anime(self, user_id: int, ani_id: str, ep_no: str, qual: str):
+        """
+        Check if a user already received a specific anime episode quality.
+        """
+        doc = await self.user_animes.find_one({"user_id": int(user_id)})
+        if not doc:
+            return False
+        return (
+            doc.get("received", {})
+                .get(str(ani_id), {})
+                .get(str(ep_no), {})
+                .get(str(qual), False)
+        )
