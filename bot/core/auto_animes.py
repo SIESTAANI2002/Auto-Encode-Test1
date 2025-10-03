@@ -166,9 +166,6 @@ async def get_animes(name, torrent, force=False):
     except Exception:
         await rep.report(format_exc(), "error")
 
-# ----------------------
-# /start handler logic
-# ----------------------
 async def handle_start(client, message, start_payload):
     try:
         # Base64 decode safely
@@ -187,15 +184,18 @@ async def handle_start(client, message, start_payload):
 
     user_id = message.from_user.id
 
-    # Check if user already got this quality
+    # Check if user already got this specific quality
     if await db.get_user_anime(user_id, f"{ani_id}-{ep_no}-{qual}"):
+        # Send website link on second hit
         if getattr(Var, "WEBSITE", None):
-            await message.reply(f"🎬 You already received this anime!\nVisit: {Var.WEBSITE} for Re-download")
+            await message.reply(
+                f"🎬 You already received this anime!\nVisit: {Var.WEBSITE} for Re-download"
+            )
         else:
             await message.reply("🎬 You already received this anime!")
         return
 
-    # First hit → send file
+    # First hit → send the file
     msg = await client.get_messages(Var.FILE_STORE, message_ids=msg_id)
     if not msg:
         await message.reply("File not found!")
@@ -225,7 +225,7 @@ async def handle_start(client, message, start_payload):
         await message.reply("File type not supported!")
         return
 
-    # Mark in DB that user received this quality
+    # Mark in DB that this user received this specific quality
     await db.mark_user_anime(user_id, f"{ani_id}-{ep_no}-{qual}")
 
     # Auto delete with notice
