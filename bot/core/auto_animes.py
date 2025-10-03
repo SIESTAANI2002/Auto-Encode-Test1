@@ -172,10 +172,15 @@ async def get_animes(name, torrent, force=False):
 # ----------------------
 # /start handler logic (no base64, direct payload)
 # ----------------------
+# ----------------------
+# /start handler logic
+# ----------------------
 async def handle_start(client, message, start_payload):
     try:
-        # Expected payload format: anime-ani_id-ep_no-qual-msg_id
-        parts = start_payload.split("-")
+        # Decode payload
+        decoded = base64.urlsafe_b64decode(start_payload).decode()
+        # payload format: anime-ani_id-ep_no-qual-msg_id
+        parts = decoded.split("-")
         if len(parts) != 5 or parts[0] != "anime":
             await message.reply("Invalid payload!")
             return
@@ -184,22 +189,19 @@ async def handle_start(client, message, start_payload):
         ep_no = parts[2]
         qual = parts[3]
         msg_id = int(parts[4])
-
     except Exception:
         await message.reply("Invalid payload!")
         return
 
     user_id = message.from_user.id
 
-    # Check if already got this anime+episode+qual
-    if await db.get_user_anime(user_id, f"{ani_id}-{ep_no}-{qual}"):
+    # Check if user already got this anime+ep+qual
+    if await db.get_user_anime(user_id, ani_id, ep_no, qual):
         # Send website link on second hit
         if getattr(Var, "WEBSITE", None):
-            await message.reply(
-                f"🎬 You already received this anime!\nVisit: {Var.WEBSITE} for Re-download"
-            )
+            await message.reply(f"🎬 You already received {qual} of this episode!\nVisit: {Var.WEBSITE} for Re-download")
         else:
-            await message.reply("🎬 You already received this anime!")
+            await message.reply(f"🎬 You already received {qual} of this episode!")
         return
 
     # First hit → get file
@@ -210,7 +212,6 @@ async def handle_start(client, message, start_payload):
 
     protect = getattr(Var, "TG_PROTECT_CONTENT", False)
 
-    sent = None
     if msg.document:
         sent = await client.send_document(
             chat_id=message.chat.id,
@@ -233,8 +234,8 @@ async def handle_start(client, message, start_payload):
         await message.reply("File type not supported!")
         return
 
-    # Mark in DB (per user, per anime-ep-qual)
-    await db.mark_user_anime(user_id, f"{ani_id}-{ep_no}-{qual}")
+    # Mark in DB
+    await db.mark_user_anime(user_id, ani_id, ep_no, qual)
 
     # Auto delete with notice
     if getattr(Var, "AUTO_DEL", False):
@@ -242,7 +243,7 @@ async def handle_start(client, message, start_payload):
             timer = int(getattr(Var, "DEL_TIMER", 60))
             notify = await client.send_message(
                 chat_id=message.chat.id,
-                text=f"⚠️ This file will be auto-deleted in {timer} seconds! | Save it quickly"
+                text=f"⚠️ This file will be auto-deleted in {timer} seconds! | Save or Forward it"
             )
             await asyncio.sleep(timer)
             await sent.delete()
