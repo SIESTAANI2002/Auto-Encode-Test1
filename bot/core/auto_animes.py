@@ -170,11 +170,14 @@ async def get_animes(name, torrent, force=False):
 # /start handler logic
 # ----------------------
 async def handle_start(client, message, start_payload):
+    """
+    Handles when a user hits a bot start button.
+    Payload format (Base64): anime-ani_id-ep_no-qual-msg_id
+    """
     try:
-        # Decode Base64 safely
-        padded = start_payload + '=' * (-len(start_payload) % 4)  # pad if needed
+        # Ensure proper Base64 padding
+        padded = start_payload + '=' * (-len(start_payload) % 4)
         decoded = base64.urlsafe_b64decode(padded).decode()
-        # Expected format: anime-ani_id-ep_no-qual-msg_id
         parts = decoded.split("-")
         if len(parts) != 5 or parts[0] != "anime":
             await message.reply("Invalid payload!")
@@ -190,22 +193,27 @@ async def handle_start(client, message, start_payload):
 
     user_id = message.from_user.id
 
-    # Check if user already got this anime+ep+qual
-    if await db.get_user_anime(user_id, ani_id, ep_no, qual):
+    # Check if this user already received this specific quality
+    already_received = await db.get_user_anime(user_id, f"{ani_id}-{ep_no}-{qual}")
+
+    if already_received:
+        # Send website link if provided
         if getattr(Var, "WEBSITE", None):
-            await message.reply(f"🎬 You already received {qual} of this episode!\nVisit: {Var.WEBSITE} for Re-download")
+            await message.reply(f"🎬 You already received this anime!\nVisit: {Var.WEBSITE} for Re-download")
         else:
-            await message.reply(f"🎬 You already received {qual} of this episode!")
+            await message.reply("🎬 You already received this anime!")
         return
 
-    # First hit → get file
+    # Fetch the file from the file store
     msg = await client.get_messages(Var.FILE_STORE, message_ids=msg_id)
     if not msg:
         await message.reply("File not found!")
         return
 
+    # Determine protect content
     protect = getattr(Var, "TG_PROTECT_CONTENT", False)
 
+    # Send the appropriate file type
     if msg.document:
         sent = await client.send_document(
             chat_id=message.chat.id,
@@ -228,16 +236,16 @@ async def handle_start(client, message, start_payload):
         await message.reply("File type not supported!")
         return
 
-    # Mark in DB
-    await db.mark_user_anime(user_id, ani_id, ep_no, qual)
+    # Mark that the user has received this anime quality
+    await db.mark_user_anime(user_id, f"{ani_id}-{ep_no}-{qual}")
 
-    # Auto delete with notice
+    # Auto-delete message if enabled
     if getattr(Var, "AUTO_DEL", False):
         try:
             timer = int(getattr(Var, "DEL_TIMER", 60))
             notify = await client.send_message(
                 chat_id=message.chat.id,
-                text=f"⚠️ This file will be auto-deleted in {timer} seconds! | Save or Forward it"
+                text=f"⚠️ This file will be auto-deleted in {timer} seconds! | Save it now"
             )
             await asyncio.sleep(timer)
             await sent.delete()
@@ -246,9 +254,9 @@ async def handle_start(client, message, start_payload):
                 chat_id=message.chat.id,
                 text="⏳ File has been auto-deleted!"
             )
-        except:
+        except Exception:
             pass
-
+            
 # ----------------------
 # Extra utils
 # ----------------------
