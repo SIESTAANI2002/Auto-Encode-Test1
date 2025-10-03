@@ -5,7 +5,7 @@ from os import path as ospath
 from aiofiles.os import remove as aioremove
 from traceback import format_exc
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-import base64
+import urllib.parse
 
 from bot import bot, bot_loop, Var, ani_cache, ffQueue, ffLock, ff_queued
 from .tordownload import TorDownloader
@@ -19,7 +19,7 @@ from .reporter import rep
 btn_formatter = {
     '1080': '1080p',
     '720': '720p',
-    '480': '480p'
+    '480': '48𝟬𝗽'
 }
 
 # ----------------------
@@ -74,17 +74,17 @@ async def get_animes(name, torrent, force=False):
             f"‣ <b>Anime Name :</b> <b><i>{name}</i></b>\n\n<i>Downloading...</i>"
         )
 
-        # Retry download up to 3 times
+        # Retry download up to 3 times if incomplete
         dl = None
         for attempt in range(3):
             dl = await TorDownloader("./downloads").download(torrent, name)
             if dl and ospath.exists(dl):
                 break
-            await rep.report(f"Download failed. Retrying ({attempt+1}/3)...", "warning")
+            await rep.report(f"Download failed or incomplete. Retrying ({attempt+1}/3)...", "warning")
             await asyncio.sleep(5)
 
         if not dl or not ospath.exists(dl):
-            await rep.report("File Download Incomplete. Skipping", "error")
+            await rep.report(f"File Download Incomplete after 3 retries, Skipping", "error")
             await stat_msg.delete()
             return
 
@@ -109,49 +109,49 @@ async def get_animes(name, torrent, force=False):
             try:
                 out_path = await FFEncoder(stat_msg, dl, filename, qual).start_encode()
             except Exception as e:
-                await rep.report(f"Error: {e}, Cancelled!", "error")
+                await rep.report(f"Error: {e}, Cancelled, Retry Again!", "error")
                 await stat_msg.delete()
                 ffLock.release()
                 return
 
-            await rep.report(f"✅ Encoded ({qual}). Uploading...", "info")
-            await editMessage(stat_msg, f"‣ <b>Anime Name :</b> <b><i>{filename}</i></b>\n\n<i>Uploading...</i>")
+            await rep.report(f"✅ Successfully Compressed ({qual}). Uploading...", "info")
+            await editMessage(stat_msg, f"‣ <b>Anime Name :</b> <b><i>{filename}</i></b>\n\n<i>Ready to Upload...</i>")
             await asyncio.sleep(1.5)
 
             try:
                 msg = await TgUploader(stat_msg).upload(out_path, qual)
             except Exception as e:
-                await rep.report(f"Error: {e}, Upload Cancelled!", "error")
+                await rep.report(f"Error: {e}, Cancelled, Retry Again!", "error")
                 await stat_msg.delete()
                 ffLock.release()
                 return
 
-            await rep.report(f"✅ Uploaded {qual} file...", "info")
+            await rep.report(f"✅ Successfully Uploaded {qual} File to Tg...", "info")
             msg_id = msg.id
 
-            # Base64 payload with proper padding
+            # ----------------------
+            # URL-encode payload instead of base64
+            # ----------------------
             payload = f"anime-{ani_id}-{ep_no}-{qual}-{msg_id}"
-            encoded_payload = base64.urlsafe_b64encode(payload.encode()).decode()
-            encoded_payload += "=" * (-len(encoded_payload) % 4)
+            encoded_payload = urllib.parse.quote(payload)
             link = f"https://t.me/{(await bot.get_me()).username}?start={encoded_payload}"
 
-            # Buttons
             btn_label = btn_formatter.get(qual, qual)
             new_btn = InlineKeyboardButton(
                 f"{btn_label} - {convertBytes(msg.document.file_size)}",
                 url=link
             )
-            if btns and len(btns[-1]) == 1:
+            if len(btns) != 0 and len(btns[-1]) == 1:
                 btns[-1].append(new_btn)
             else:
                 btns.append([new_btn])
+
             await editMessage(
                 post_msg,
                 post_msg.caption.html if post_msg.caption else "",
                 InlineKeyboardMarkup(btns)
             )
 
-            # Save DB
             await db.saveAnime(ani_id, ep_no, qual, msg_id)
             bot_loop.create_task(extra_utils(msg_id, out_path))
 
@@ -163,12 +163,13 @@ async def get_animes(name, torrent, force=False):
     except Exception:
         await rep.report(format_exc(), "error")
 
+
 # ----------------------
 # /start handler
 # ----------------------
 async def handle_start(client, message, start_payload):
     try:
-        decoded = base64.urlsafe_b64decode(start_payload + '=' * (-len(start_payload) % 4)).decode()
+        decoded = urllib.parse.unquote(start_payload)
         parts = decoded.split("-")
         if len(parts) != 5:
             raise ValueError("Payload parts mismatch")
@@ -182,18 +183,19 @@ async def handle_start(client, message, start_payload):
     # Check if user already got this quality
     if await db.get_user_anime(user_id, f"{ani_id}-{ep_no}-{qual}"):
         if getattr(Var, "WEBSITE", None):
-            await message.reply(f"🎬 Already received!\nVisit: {Var.WEBSITE}")
+            await message.reply(f"🎬 You already received this anime!\nVisit: {Var.WEBSITE} for Re-download")
         else:
-            await message.reply("🎬 Already received!")
+            await message.reply("🎬 You already received this anime!")
         return
 
-    # Send file first time
+    # Send file
     msg = await client.get_messages(Var.FILE_STORE, message_ids=msg_id)
     if not msg:
         await message.reply("File not found!")
         return
 
     protect = getattr(Var, "TG_PROTECT_CONTENT", False)
+
     if msg.document:
         sent = await client.send_document(
             chat_id=message.chat.id,
@@ -216,26 +218,24 @@ async def handle_start(client, message, start_payload):
         await message.reply("File type not supported!")
         return
 
-    # Mark DB
+    # Mark user received this quality
     await db.mark_user_anime(user_id, f"{ani_id}-{ep_no}-{qual}")
 
-    # Auto delete
+    # Auto-delete
     if getattr(Var, "AUTO_DEL", False):
         try:
             timer = int(getattr(Var, "DEL_TIMER", 60))
             notify = await client.send_message(
                 chat_id=message.chat.id,
-                text=f"⚠️ This file will be auto-deleted in {timer} seconds!"
+                text=f"⚠️ This file will be auto-deleted in {timer} seconds! | Save or Forward it"
             )
             await asyncio.sleep(timer)
             await sent.delete()
             await notify.delete()
-            await client.send_message(
-                chat_id=message.chat.id,
-                text="⏳ File has been auto-deleted!"
-            )
+            await client.send_message(chat_id=message.chat.id, text="⏳ File has been auto-deleted!")
         except:
             pass
+
 
 # ----------------------
 # Extra utils
