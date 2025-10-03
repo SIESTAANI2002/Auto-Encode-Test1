@@ -166,17 +166,17 @@ async def get_animes(name, torrent, force=False):
     except Exception:
         await rep.report(format_exc(), "error")
 
-
 # ----------------------
 # /start handler logic
 # ----------------------
 async def handle_start(client, message, start_payload):
     try:
-        # Decode Base64 safely
-        padded = start_payload + '=' * (-len(start_payload) % 4)
-        decoded = base64.urlsafe_b64decode(padded).decode()
-        # Payload format: anime-ani_id-ep_no-qual-msg_id
+        # Base64 decode
+        decoded_bytes = base64.urlsafe_b64decode(start_payload + '=' * (-len(start_payload) % 4))
+        decoded = decoded_bytes.decode()
         parts = decoded.split("-")
+        if len(parts) != 5:
+            raise ValueError("Payload parts mismatch")
         ani_id = parts[1]
         ep_no = parts[2]
         qual = parts[3]
@@ -187,7 +187,7 @@ async def handle_start(client, message, start_payload):
 
     user_id = message.from_user.id
 
-    # Check if user already received this quality
+    # Check if user already got this quality
     if await db.get_user_anime(user_id, f"{ani_id}-{ep_no}-{qual}"):
         if getattr(Var, "WEBSITE", None):
             await message.reply(f"🎬 You already received this anime!\nVisit: {Var.WEBSITE} for Re-download")
@@ -225,7 +225,7 @@ async def handle_start(client, message, start_payload):
         await message.reply("File type not supported!")
         return
 
-    # Mark in DB
+    # Mark in DB that user received this quality
     await db.mark_user_anime(user_id, f"{ani_id}-{ep_no}-{qual}")
 
     # Auto delete with notice
