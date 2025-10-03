@@ -171,7 +171,7 @@ async def get_animes(name, torrent, force=False):
 # ----------------------
 async def handle_start(client, message, start_payload):
     try:
-        # Base64 decode
+        # Base64 decode safely
         decoded_bytes = base64.urlsafe_b64decode(start_payload + '=' * (-len(start_payload) % 4))
         decoded = decoded_bytes.decode()
         parts = decoded.split("-")
@@ -245,7 +245,7 @@ async def handle_start(client, message, start_payload):
             )
         except:
             pass
-            
+
 # ----------------------
 # Extra utils
 # ----------------------
