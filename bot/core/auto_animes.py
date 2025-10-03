@@ -23,15 +23,11 @@ btn_formatter = {
 }
 
 # ----------------------
-# Base64 helpers
+# Safe Base64 decode
 # ----------------------
-def encode_payload(payload: str) -> str:
-    encoded = base64.urlsafe_b64encode(payload.encode()).decode()
-    return encoded.rstrip("=")  # strip padding for Telegram
-
-def decode_payload(encoded: str) -> str:
-    padding = '=' * (-len(encoded) % 4)  # add padding back
-    return base64.urlsafe_b64decode(encoded + padding).decode()
+def safe_b64decode(payload: str) -> str:
+    padded = payload + '=' * (-len(payload) % 4)
+    return base64.urlsafe_b64decode(padded).decode()
 
 # ----------------------
 # Fetch ongoing animes
@@ -140,12 +136,11 @@ async def get_animes(name, torrent, force=False):
             await rep.report(f"✅ Successfully Uploaded {qual} File to Tg...", "info")
             msg_id = msg.id
 
-            # Create Base64 button payload safely
+            # Create Base64 button payload per-quality
             payload = f"anime-{ani_id}-{ep_no}-{qual}-{msg_id}"
-            encoded_payload = base64.urlsafe_b64encode(payload.encode()).decode()  # KEEP padding
+            encoded_payload = base64.urlsafe_b64encode(payload.encode()).decode()
             link = f"https://t.me/{(await bot.get_me()).username}?start={encoded_payload}"
 
-            # Telegram buttons
             btn_label = btn_formatter.get(qual, qual)
             new_btn = InlineKeyboardButton(
                 f"{btn_label} - {convertBytes(msg.document.file_size)}",
@@ -161,10 +156,8 @@ async def get_animes(name, torrent, force=False):
                 InlineKeyboardMarkup(btns)
             )
 
-            # Save in DB
+            # Save per-quality in DB
             await db.saveAnime(ani_id, ep_no, qual, msg_id)
-
-            # Extra utils (backup etc.)
             bot_loop.create_task(extra_utils(msg_id, out_path))
 
         ffLock.release()
@@ -177,24 +170,23 @@ async def get_animes(name, torrent, force=False):
     except Exception:
         await rep.report(format_exc(), "error")
 
-
 # ----------------------
-# /start handler logic
+# /start handler
 # ----------------------
 async def handle_start(client, message, start_payload):
     try:
-        decoded = base64.urlsafe_b64decode(start_payload).decode()
+        decoded = safe_b64decode(start_payload)
         parts = decoded.split("-")
         if len(parts) != 5:
             raise ValueError("Payload parts mismatch")
         ani_id, ep_no, qual, msg_id = parts[1], parts[2], parts[3], int(parts[4])
-    except Exception as e:
-        await message.reply(f"Invalid payload! ({e})")
+    except Exception:
+        await message.reply("Invalid payload!")
         return
 
     user_id = message.from_user.id
 
-    # Check if user already got this specific quality
+    # Check if user already got this quality
     if await db.get_user_anime(user_id, f"{ani_id}-{ep_no}-{qual}"):
         if getattr(Var, "WEBSITE", None):
             await message.reply(f"🎬 You already received this anime!\nVisit: {Var.WEBSITE} for Re-download")
@@ -202,7 +194,7 @@ async def handle_start(client, message, start_payload):
             await message.reply("🎬 You already received this anime!")
         return
 
-    # First hit → send file
+    # Send the file
     msg = await client.get_messages(Var.FILE_STORE, message_ids=msg_id)
     if not msg:
         await message.reply("File not found!")
@@ -232,10 +224,10 @@ async def handle_start(client, message, start_payload):
         await message.reply("File type not supported!")
         return
 
-    # Mark in DB
+    # Mark user got this quality
     await db.mark_user_anime(user_id, f"{ani_id}-{ep_no}-{qual}")
 
-    # Auto delete with notice
+    # Auto delete
     if getattr(Var, "AUTO_DEL", False):
         try:
             timer = int(getattr(Var, "DEL_TIMER", 60))
