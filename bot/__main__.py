@@ -1,13 +1,12 @@
-from asyncio import create_task, create_subprocess_exec, create_subprocess_shell, run as asyrun, all_tasks, gather, sleep as asleep
+from asyncio import create_task, create_subprocess_exec, all_tasks, sleep as asleep
 from aiofiles import open as aiopen
 from pyrogram import idle
 from pyrogram.filters import command, user
+from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from os import path as ospath, execl, kill
 from sys import executable
 from signal import SIGKILL
-from pyrogram import filters
 import base64
-from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from bot import bot, Var, bot_loop, sch, LOGS, ffQueue, ffLock, ffpids_cache, ff_queued
 from bot.core.auto_animes import fetch_animes, handle_start
@@ -17,40 +16,37 @@ from bot.modules.up_posts import upcoming_animes
 # ----------------------
 # /start command handler
 # ----------------------
-@bot.on_message(filters.command("start"))
+@bot.on_message(command("start"))
 async def start(client, message):
-    # Private chat only
-    if message.chat.type == "private":
-        if len(message.command) > 1:
-            start_payload = message.text.split(" ", 1)[1]
-            try:
-                # Decode Base64 safely
-                padded = start_payload + '=' * (-len(start_payload) % 4)
-                decoded_payload = base64.urlsafe_b64decode(padded).decode()
-            except Exception:
-                await message.reply("Input Link is Invalid for Usage !")
-                return
-
-            # Handle anime payload
-            await handle_start(client, message, decoded_payload)
-
-        else:
-            # PM welcome with thumbnail, caption, buttons from config
-            buttons = []
-            if getattr(Var, "START_BUTTONS", None):
-                for btn in Var.START_BUTTONS.split():
-                    if "|" in btn:
-                        text, url = btn.split("|", 1)
-                        buttons.append([InlineKeyboardButton(text, url=url)])
-            await client.send_photo(
-                chat_id=message.chat.id,
-                photo=Var.START_PHOTO,
-                caption=Var.START_MSG.format(first_name=message.from_user.first_name),
-                reply_markup=InlineKeyboardMarkup(buttons) if buttons else None
-            )
-    else:
-        # In groups/channels: simple message
+    # If not private → simple info
+    if message.chat.type != "private":
         await message.reply("Hello! Use the buttons in private chat to get your file.")
+        return
+
+    # Payload exists → handle anime button
+    if len(message.command) > 1:
+        start_payload = message.text.split(" ", 1)[1]
+        try:
+            padded = start_payload + '=' * (-len(start_payload) % 4)
+            decoded_payload = base64.urlsafe_b64decode(padded).decode()
+        except Exception:
+            await message.reply("Input Link is Invalid for Usage !")
+            return
+        await handle_start(client, message, decoded_payload)
+    else:
+        # No payload → show welcome photo/message/buttons
+        buttons = []
+        if getattr(Var, "START_BUTTONS", None):
+            for btn in Var.START_BUTTONS.split():
+                if "|" in btn:
+                    text, url = btn.split("|", 1)
+                    buttons.append([InlineKeyboardButton(text, url=url)])
+        await client.send_photo(
+            chat_id=message.chat.id,
+            photo=Var.START_PHOTO,
+            caption=Var.START_MSG.format(first_name=message.from_user.first_name),
+            reply_markup=InlineKeyboardMarkup(buttons) if buttons else None
+        )
 
 # ----------------------
 # Restart command
@@ -62,7 +58,7 @@ async def restart_cmd(client, message):
     if sch.running:
         sch.shutdown(wait=False)
     await clean_up()
-    if len(ffpids_cache) != 0: 
+    if len(ffpids_cache) != 0:
         for pid in ffpids_cache:
             try:
                 LOGS.info(f"Process ID : {pid}")
@@ -116,7 +112,7 @@ async def main():
     await idle()
     LOGS.info('Auto Anime Bot Stopped!')
     await bot.stop()
-    for task in all_tasks:
+    for task in all_tasks():
         task.cancel()
     await clean_up()
     LOGS.info('Finished AutoCleanUp !!')
