@@ -1,6 +1,6 @@
 # bot/core/auto_animes.py
 import asyncio
-from asyncio import Event, sleep
+from asyncio import Event
 from os import path as ospath
 from aiofiles.os import remove as aioremove
 from traceback import format_exc
@@ -129,8 +129,8 @@ async def get_animes(name, torrent, force=False):
             await rep.report(f"✅ Successfully Uploaded {qual} File to Tg...", "info")
             msg_id = msg.id
 
-            # Create Base64 button payload
-            payload = f"anime-{ani_id}-{msg_id}"
+            # Create Base64 button payload (now include ep + qual)
+            payload = f"anime-{ani_id}-{ep_no}-{qual}-{msg_id}"
             encoded_payload = base64.urlsafe_b64encode(payload.encode()).decode()
             link = f"https://t.me/{(await bot.get_me()).username}?start={encoded_payload}"
 
@@ -171,22 +171,22 @@ async def get_animes(name, torrent, force=False):
 # ----------------------
 async def handle_start(client, message, start_payload):
     try:
-        parts = start_payload.split("-")
-        ani_id = parts[1]
-        msg_id = int(parts[2])
+        decoded = base64.urlsafe_b64decode(start_payload).decode()
+        # payload = anime-ani_id-ep_no-qual-msg_id
+        _, ani_id, ep_no, qual, msg_id = decoded.split("-")
+        msg_id = int(msg_id)
     except:
         await message.reply("Invalid payload!")
         return
 
     user_id = message.from_user.id
 
-    # Check if already got this anime
-    if await db.get_user_anime(user_id, ani_id):
-        # Send website link on second hit
+    # Check if already got this anime+ep+qual
+    if await db.get_user_anime(user_id, ani_id, ep_no, qual):
         if getattr(Var, "WEBSITE", None):
-            await message.reply(f"🎬 You already received this anime!\nVisit: {Var.WEBSITE} for Re-download")
+            await message.reply(f"🎬 You already received {qual} for Ep {ep_no}!\nVisit: {Var.WEBSITE} for Re-download")
         else:
-            await message.reply("🎬 You already received this anime!")
+            await message.reply(f"🎬 You already received {qual} for Ep {ep_no}!")
         return
 
     # First hit → get file
@@ -219,8 +219,8 @@ async def handle_start(client, message, start_payload):
         await message.reply("File type not supported!")
         return
 
-    # Mark in DB
-    await db.mark_user_anime(user_id, ani_id)
+    # Mark in DB (user got this quality)
+    await db.mark_user_anime(user_id, ani_id, ep_no, qual)
 
     # Auto delete with notice
     if getattr(Var, "AUTO_DEL", False):
@@ -228,14 +228,14 @@ async def handle_start(client, message, start_payload):
             timer = int(getattr(Var, "DEL_TIMER", 60))
             notify = await client.send_message(
                 chat_id=message.chat.id,
-                text=f"⚠️ This file will be auto-deleted in {timer} seconds! | Save or Forword it"
+                text=f"⚠️ This {qual} file will be auto-deleted in {timer} seconds!"
             )
             await asyncio.sleep(timer)
             await sent.delete()
             await notify.delete()
             await client.send_message(
                 chat_id=message.chat.id,
-                text="⏳ File has been auto-deleted!"
+                text=f"⏳ {qual} file has been auto-deleted!"
             )
         except:
             pass
