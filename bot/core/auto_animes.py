@@ -1,6 +1,6 @@
 # bot/core/auto_animes.py
 import asyncio
-from asyncio import Event
+from asyncio import Event, sleep
 from os import path as ospath
 from aiofiles.os import remove as aioremove
 from traceback import format_exc
@@ -129,7 +129,7 @@ async def get_animes(name, torrent, force=False):
             msg_id = msg.id
 
             # Create Base64 button payload
-            payload = f"anime-{ani_id}-{msg_id}-{qual}"
+            payload = f"anime-{ani_id}-{qual}-{msg_id}"
             encoded_payload = base64.urlsafe_b64encode(payload.encode()).decode()
             link = f"https://t.me/{(await bot.get_me()).username}?start={encoded_payload}"
 
@@ -166,13 +166,13 @@ async def get_animes(name, torrent, force=False):
         await rep.report(format_exc(), "error")
 
 # ----------------------
-# /start handler logic for first-hit / second-hit
+# /start handler logic
 # ----------------------
 async def handle_start(client, message, start_payload):
     try:
         parts = start_payload.split("-")
         ani_id = parts[1]
-        qual = parts[2]
+        qual = qual[2]
         msg_id = int(parts[3])
     except:
         await message.reply("Invalid payload!")
@@ -180,49 +180,65 @@ async def handle_start(client, message, start_payload):
 
     user_id = message.from_user.id
 
-    # Check if user already received this anime
-    already_received = await db.get_user_anime(user_id, ani_id, qual)
-
-    if already_received and already_received.get("got_file", False):
-        # Second hit → send website link
-        await message.reply(f"🎬 You already received this anime!\nVisit: {Var.WEBSITE}")
+    # Check if already got this anime
+    if await db.get_user_anime(user_id, ani_id):
+        # Send website link on second hit
+        if getattr(Var, "WEBSITE", None):
+            await message.reply(f"🎬 You already received this anime!\nVisit: {Var.WEBSITE}")
+        else:
+            await message.reply("🎬 You already received this anime!")
         return
 
-    # First hit → send the file
+    # First hit → get file
     msg = await client.get_messages(Var.FILE_STORE, message_ids=msg_id)
     if not msg:
         await message.reply("File not found!")
         return
 
-    # Send depending on file type
+    protect = getattr(Var, "TG_PROTECT_CONTENT", False)
+
     if msg.document:
-        sent = await message.reply_document(msg.document.file_id)
+        sent = await client.send_document(
+            chat_id=message.chat.id,
+            document=msg.document.file_id,
+            protect_content=protect
+        )
     elif msg.video:
-        sent = await message.reply_video(msg.video.file_id)
+        sent = await client.send_video(
+            chat_id=message.chat.id,
+            video=msg.video.file_id,
+            protect_content=protect
+        )
     elif msg.photo:
-        sent = await message.reply_photo(msg.photo.file_id)
+        sent = await client.send_photo(
+            chat_id=message.chat.id,
+            photo=msg.photo.file_id,
+            protect_content=protect
+        )
     else:
         await message.reply("File type not supported!")
         return
 
-    # Mark user as received immediately
-    await db.mark_user_anime(user_id, ani_id, qual)
+    # Mark in DB
+    await db.mark_user_anime(user_id, ani_id)
 
-    # --------------------
-    # Auto-delete using config
-    # --------------------
-    if Var.AUTO_DEL:
-        async def auto_delete(sent_msg):
-            try:
-                await asyncio.sleep(int(Var.DEL_TIMER))
-                await sent_msg.delete()
-            except Exception:
-                pass
-
-        asyncio.create_task(auto_delete(sent))
-
-        # Optional: notify user
-        await message.reply(f"⚠️ This file will be automatically deleted in {Var.DEL_TIMER} seconds.")
+    # Auto delete with notice
+    if getattr(Var, "AUTO_DEL", False):
+        try:
+            timer = int(getattr(Var, "DEL_TIMER", 60))
+            notify = await client.send_message(
+                chat_id=message.chat.id,
+                text=f"⚠️ This file will be auto-deleted in {timer} seconds!"
+            )
+            await asyncio.sleep(timer)
+            await sent.delete()
+            await notify.delete()
+            await client.send_message(
+                chat_id=message.chat.id,
+                text="⏳ File has been auto-deleted!"
+            )
+        except:
+            pass
 
 # ----------------------
 # Extra utils
