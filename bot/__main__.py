@@ -31,35 +31,32 @@ async def start(client, message):
         await handle_start(client, message, decoded_payload)
 
     else:
-        if message.chat.type == "private":
-            # Send start photo and buttons in PM
-            start_photo = getattr(Var, "START_PHOTO", None)
-            start_msg = getattr(Var, "START_MSG", "Hello!")
-            start_buttons = getattr(Var, "START_BUTTONS", "")
-            btns = []
-            if start_buttons:
-                for b in start_buttons.split():
-                    try:
-                        label, url = b.split("|")
-                        btns.append([InlineKeyboardButton(label, url=url)])
-                    except:
-                        continue
-            if start_photo:
-                await client.send_photo(
-                    chat_id=message.chat.id,
-                    photo=start_photo,
-                    caption=start_msg.format(first_name=message.from_user.first_name),
-                    reply_markup=InlineKeyboardMarkup(btns) if btns else None
-                )
-            else:
-                await client.send_message(
-                    chat_id=message.chat.id,
-                    text=start_msg.format(first_name=message.from_user.first_name),
-                    reply_markup=InlineKeyboardMarkup(btns) if btns else None
-                )
+        # Show start photo + buttons
+        start_photo = getattr(Var, "START_PHOTO", None)
+        start_msg = getattr(Var, "START_MSG", "Hello! Use the buttons in private chat to get your file.")
+        start_buttons = getattr(Var, "START_BUTTONS", "")
+        btns = []
+        if start_buttons:
+            for b in start_buttons.split():
+                try:
+                    label, url = b.split("|")
+                    btns.append([InlineKeyboardButton(label, url=url)])
+                except:
+                    continue
+
+        if start_photo:
+            await client.send_photo(
+                chat_id=message.chat.id,
+                photo=start_photo,
+                caption=start_msg.format(first_name=message.from_user.first_name),
+                reply_markup=InlineKeyboardMarkup(btns) if btns else None
+            )
         else:
-            # message in group/channel
-            await message.reply("Hello! Use the buttons in private chat to get your file.")
+            await client.send_message(
+                chat_id=message.chat.id,
+                text=start_msg.format(first_name=message.from_user.first_name),
+                reply_markup=InlineKeyboardMarkup(btns) if btns else None
+            )
 
 # ----------------------
 # Restart command
