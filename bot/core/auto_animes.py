@@ -183,7 +183,7 @@ async def get_animes(name, torrent, force=False):
 # ----------------------
 async def handle_start(client, message, start_payload):
     try:
-        decoded = decode_payload(start_payload)
+        decoded = base64.urlsafe_b64decode(start_payload).decode()
         parts = decoded.split("-")
         if len(parts) != 5:
             raise ValueError("Payload parts mismatch")
