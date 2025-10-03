@@ -24,16 +24,21 @@ class MongoDB:
             await self.__animes.update_one({'_id': ani_id}, {'$set': {"msg_id": post_id}}, upsert=True)
 
     # ----------------------
-    # Per-user hit tracking
+    # Per-user hit tracking (per anime + ep + quality)
     # ----------------------
-    async def get_user_anime(self, user_id, ani_id):
-        """Return document if user already got this anime"""
-        return await self.__user_animes.find_one({'user_id': user_id, 'anime_id': ani_id})
+    async def get_user_anime(self, user_id, ani_id, ep_no, qual):
+        """Return document if user already got this anime episode in given quality"""
+        return await self.__user_animes.find_one({
+            'user_id': user_id,
+            'anime_id': ani_id,
+            'episode': ep_no,
+            'quality': qual
+        })
 
-    async def mark_user_anime(self, user_id, ani_id):
-        """Mark that user received this anime"""
+    async def mark_user_anime(self, user_id, ani_id, ep_no, qual):
+        """Mark that user received this anime episode in given quality"""
         await self.__user_animes.update_one(
-            {'user_id': user_id, 'anime_id': ani_id},
+            {'user_id': user_id, 'anime_id': ani_id, 'episode': ep_no, 'quality': qual},
             {'$set': {'got_file': True}},
             upsert=True
         )
