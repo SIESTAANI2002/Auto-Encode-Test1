@@ -5,6 +5,7 @@ from os import path as ospath
 from aiofiles.os import remove as aioremove
 from traceback import format_exc
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+import base64
 import urllib.parse
 
 from bot import bot, bot_loop, Var, ani_cache, ffQueue, ffLock, ff_queued
@@ -74,7 +75,7 @@ async def get_animes(name, torrent, force=False):
             f"‣ <b>Anime Name :</b> <b><i>{name}</i></b>\n\n<i>Downloading...</i>"
         )
 
-        # Retry download up to 3 times if incomplete
+        # Retry download up to 3 times
         dl = None
         for attempt in range(3):
             dl = await TorDownloader("./downloads").download(torrent, name)
@@ -129,13 +130,12 @@ async def get_animes(name, torrent, force=False):
             await rep.report(f"✅ Successfully Uploaded {qual} File to Tg...", "info")
             msg_id = msg.id
 
-            # ----------------------
-            # URL-encode payload instead of base64
-            # ----------------------
+            # Create URL-encoded Base64 payload
             payload = f"anime-{ani_id}-{ep_no}-{qual}-{msg_id}"
-            encoded_payload = urllib.parse.quote(payload)
+            encoded_payload = urllib.parse.quote(base64.urlsafe_b64encode(payload.encode()).decode())
             link = f"https://t.me/{(await bot.get_me()).username}?start={encoded_payload}"
 
+            # Telegram buttons
             btn_label = btn_formatter.get(qual, qual)
             new_btn = InlineKeyboardButton(
                 f"{btn_label} - {convertBytes(msg.document.file_size)}",
@@ -145,18 +145,22 @@ async def get_animes(name, torrent, force=False):
                 btns[-1].append(new_btn)
             else:
                 btns.append([new_btn])
-
             await editMessage(
                 post_msg,
                 post_msg.caption.html if post_msg.caption else "",
                 InlineKeyboardMarkup(btns)
             )
 
+            # Save in DB
             await db.saveAnime(ani_id, ep_no, qual, msg_id)
+
+            # Extra utils (backup etc.)
             bot_loop.create_task(extra_utils(msg_id, out_path))
 
         ffLock.release()
         await stat_msg.delete()
+
+        # Cleanup original file after all qualities
         await aioremove(dl)
         ani_cache.setdefault('completed', set()).add(ani_id)
 
@@ -168,9 +172,12 @@ async def get_animes(name, torrent, force=False):
 # /start handler
 # ----------------------
 async def handle_start(client, message, start_payload):
+    import urllib.parse
+
     try:
-        decoded = urllib.parse.unquote(start_payload)
-        parts = decoded.split("-")
+        # Decode Base64 payload
+        payload_decoded = base64.urlsafe_b64decode(urllib.parse.unquote(start_payload) + '=' * (-len(start_payload) % 4)).decode()
+        parts = payload_decoded.split("-")
         if len(parts) != 5:
             raise ValueError("Payload parts mismatch")
         ani_id, ep_no, qual, msg_id = parts[1], parts[2], parts[3], int(parts[4])
@@ -188,7 +195,7 @@ async def handle_start(client, message, start_payload):
             await message.reply("🎬 You already received this anime!")
         return
 
-    # Send file
+    # First hit → send file
     msg = await client.get_messages(Var.FILE_STORE, message_ids=msg_id)
     if not msg:
         await message.reply("File not found!")
@@ -218,10 +225,10 @@ async def handle_start(client, message, start_payload):
         await message.reply("File type not supported!")
         return
 
-    # Mark user received this quality
+    # Mark in DB that user received this quality
     await db.mark_user_anime(user_id, f"{ani_id}-{ep_no}-{qual}")
 
-    # Auto-delete
+    # Auto delete with notice
     if getattr(Var, "AUTO_DEL", False):
         try:
             timer = int(getattr(Var, "DEL_TIMER", 60))
@@ -232,10 +239,12 @@ async def handle_start(client, message, start_payload):
             await asyncio.sleep(timer)
             await sent.delete()
             await notify.delete()
-            await client.send_message(chat_id=message.chat.id, text="⏳ File has been auto-deleted!")
+            await client.send_message(
+                chat_id=message.chat.id,
+                text="⏳ File has been auto-deleted!"
+            )
         except:
             pass
-
 
 # ----------------------
 # Extra utils
