@@ -26,7 +26,7 @@ class MongoDB:
     # ----------------------
     # Per-user hit tracking
     # ----------------------
-    async def get_user_anime(self, user_id, ani_id, qual=none):
+    async def get_user_anime(self, user_id, ani_id, qual=None):
         """Return document if user already got this anime"""
         return await self.__user_animes.find_one({'user_id': user_id, 'anime_id': ani_id, 'qual': qual})
 
