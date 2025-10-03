@@ -57,3 +57,12 @@ class MongoDB:
                 .get(str(ep_no), {})
                 .get(str(qual), False)
         )
+        
+# ----------------------
+    # Drop all anime data
+    # ----------------------
+    async def reboot(self):
+        await self.__animes.drop()
+
+# Single instance
+db = MongoDB(Var.MONGO_URI, "FZAutoAnimes")
