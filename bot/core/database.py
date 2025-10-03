@@ -26,14 +26,14 @@ class MongoDB:
     # ----------------------
     # Per-user hit tracking
     # ----------------------
-    async def get_user_anime(self, user_id, ani_id, qual):
+    async def get_user_anime(self, user_id, ani_id, qual=none):
         """Return document if user already got this anime"""
         return await self.__user_animes.find_one({'user_id': user_id, 'anime_id': ani_id, 'qual': qual})
 
     async def mark_user_anime(self, user_id, ani_id, qual):
         """Mark that user received this anime"""
         await self.__user_animes.update_one(
-            {'user_id': user_id, 'anime_id': ani_id, 'qual': qual},
+            {'user_id': user_id, 'anime_id': ani_id},
             {'$set': {'got_file': True}},
             upsert=True
         )
